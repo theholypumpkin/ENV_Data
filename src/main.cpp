@@ -15,7 +15,7 @@
 /*================================================================================================*/
 #define SHARP_LED_PIN 6
 #define SHARP_VO_PIN A0 
-#define CCS_811_INTERRUPT_PIN 7 // 0,1 are UART, 2,3 are i2c so 7 is the only remaining pin 
+#define CCS_811_INTERRUPT_PIN 3 //TODO change back to 7 // 0,1 are UART, 2,3 are i2c so 7 is the only remaining pin 
 #define CCS_811_nWAKE 4
 #define DHTPIN 5
 #define DHTTYPE DHT22
@@ -45,7 +45,7 @@ enum statemachine_t
 
 volatile statemachine_t e_state = IDLE;
 /*================================================================================================*/
-uint16_t g_uuid, g_loopCount = 0;
+uint16_t g_uuid = 12345, g_loopCount = 0; //TODO remove g_uuid assignment
 volatile bool b_isrFlag = false; //a flag which is flipped inside an isr
 /*________________________________________________________________________________________________*/
 DHT tempHmdSensor(DHTPIN, DHTTYPE); //Create the DHT object
@@ -55,8 +55,11 @@ GP2YDustSensor dustSensor(GP2YDustSensorType::GP2Y1010AU0F, SHARP_LED_PIN, SHARP
 void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
     pinMode(CCS_811_nWAKE, OUTPUT);
+    digitalWrite(CCS_811_nWAKE, LOW); //Enable Logic engine of CCS811
+    delayMicroseconds(55); // Time until active after nWAKE asserted = 50 us
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    setupEEPROM();
+    Serial.begin(9600);
+   // setupEEPROM(); //TODO Reanable EEPROM
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     dustSensor.begin();
     tempHmdSensor.begin();
@@ -67,15 +70,14 @@ void setup() {
             delay(500); //When falure blink LED rapidly
         }
     }
-    co2Sensor.setDriveMode(CCS811_DRIVE_MODE_60SEC);
+    co2Sensor.setDriveMode(CCS811_DRIVE_MODE_10SEC);
     co2Sensor.enableInterrupt();
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     digitalWrite(CCS_811_nWAKE, HIGH); //Disable Logic Engine
     attachInterrupt(digitalPinToInterrupt(CCS_811_INTERRUPT_PIN), setReadFlagISRCallback, FALLING); //NOTE ALTERNATIVE IS LOW
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -
     //After ~80 seconds of non responsivness, Watchdog will reset the MCU.*/
-    Watchdog.enable(80000);
-
+    //Watchdog.enable(80000); //TODO reenable Watchdog
 }
 /*________________________________________________________________________________________________*/
 /**
@@ -99,6 +101,7 @@ void loop() {
         }
         e_state = READ_DHT_SENSOR; //This is safer than setting the vlaue inside the ISR itself
         b_isrFlag = false;
+        Serial.println("Interrupt triggered");
     }
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     switch (e_state)
@@ -109,6 +112,7 @@ void loop() {
         * optimizer will likly remove it anyway
         */
         e_state = READ_CCS_SENSOR;
+        Serial.println("State: DHT done");
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case READ_CCS_SENSOR:
@@ -118,6 +122,11 @@ void loop() {
             readCCSSensor(eco2Value, tvocValue);
         }
         e_state = READ_GP2Y_SENSOR;
+        Serial.println("State: CCS done");
+        Serial.print("CO2: ");
+        Serial.println(eco2Value);
+        Serial.print("tvoc: ");
+        Serial.println(tvocValue);
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case READ_GP2Y_SENSOR:
@@ -126,6 +135,9 @@ void loop() {
             dustSensorBaseline = readGPY2SensorBaselineCanidate();
         }
         e_state = TRANSMIT_SERIAL;
+        Serial.println("State: GP2Y done");
+        Serial.print("Dust Density: ");
+        Serial.println(dustDensityValue);
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case TRANSMIT_SERIAL:
@@ -145,13 +157,18 @@ void loop() {
                 transmitSerial(eco2Value, tvocValue, dustDensityValue);
             }
         }
+        Serial.println("State: JSON Done");
         e_state = IDLE; //set the loop to idle until new interrupt triggers a change.
-        Watchdog.reset();
+        //Watchdog.reset();
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case IDLE:
     default:
-        delay(10); //Slow down a little bit
+        delay(1000); //Slow down a little bit
+        Serial.print("Interrupt Pin Value: ");
+        Serial.println(digitalRead(CCS_811_INTERRUPT_PIN));
+        Serial.print("Analog Value Dust:");
+        Serial.println(analogRead(SHARP_VO_PIN));
         break;
     }
 }

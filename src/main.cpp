@@ -43,7 +43,8 @@ void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
     pinMode(CCS_811_nWAKE, OUTPUT);
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    setupEEPROM();
+    //setupEEPROM();
+    Serial.begin(9600);
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -
     * Attach Hardware interrupt BEFORE Setting up the CCS 811 sensor, because of a race condition.
     * It cloud happen, that the pin was already driven sow by the sensor, before we attach the
@@ -66,6 +67,7 @@ void setup() {
     co2Sensor.setDriveMode(CCS811_DRIVE_MODE_10SEC);
     co2Sensor.enableInterrupt();
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    delayMicroseconds(25); //Logic engine should run at least 20 us
     digitalWrite(CCS_811_nWAKE, HIGH); //Disable Logic Engine
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -
     //After ~80 seconds of non responsivness, Watchdog will reset the MCU.*/
@@ -159,8 +161,6 @@ void loop() {
         delay(1000); //Slow down a little bit
         Serial.print("Interrupt Pin Value: ");
         Serial.println(digitalRead(CCS_811_INTERRUPT_PIN));
-        Serial.print("Analog Value Dust:");
-        Serial.println(analogRead(SHARP_VO_PIN));
         break;
     }
 }

@@ -20,19 +20,6 @@
 #define DHTPIN 5
 #define DHTTYPE DHT22
 #define EEPROM_CLEAR_BUTTON_PIN 20 //TODO maybe change the pin
-/*________________________________________________________________________________________________*/
-// If you debug using serial and not a hardware debugger you can enable/disable it here
-#define DEBUG // TODO comment this line in final build
-
-#ifdef DEBUG
-    #define DEBUGPRINT(x) Serial.print(x)
-    #define DEBUGPRINTLN(x) Serial.println(x)
-    #define DEBUGSERIALBEGIN(x) Serial.begin(x)
-#else
-    #define DEBUGPRINT(x)
-    #define DEBUGPRINTLN(x)
-    #define DEBUGSERIALBEGIN(x)
-#endif
 /*================================================================================================*/
 enum statemachine_t
 {
@@ -55,11 +42,17 @@ GP2YDustSensor dustSensor(GP2YDustSensorType::GP2Y1010AU0F, SHARP_LED_PIN, SHARP
 void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
     pinMode(CCS_811_nWAKE, OUTPUT);
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    setupEEPROM();
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -
+    * Attach Hardware interrupt BEFORE Setting up the CCS 811 sensor, because of a race condition.
+    * It cloud happen, that the pin was already driven sow by the sensor, before we attach the
+    * interrupt. When the pin is already low, we can no longer detect a falling edge, hence the ISR
+    * would never trigger.
+    */
+    attachInterrupt(digitalPinToInterrupt(CCS_811_INTERRUPT_PIN), setReadFlagISRCallback, FALLING);
     digitalWrite(CCS_811_nWAKE, LOW); //Enable Logic engine of CCS811
     delayMicroseconds(55); // Time until active after nWAKE asserted = 50 us
-    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    Serial.begin(9600);
-   // setupEEPROM(); //TODO Reanable EEPROM
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     dustSensor.begin();
     tempHmdSensor.begin();
@@ -67,14 +60,13 @@ void setup() {
         while(1){
             bool state = digitalRead(LED_BUILTIN);
             digitalWrite(LED_BUILTIN, !state);
-            delay(500); //When falure blink LED rapidly
+            delay(500); //When failure blink LED rapidly
         }
     }
     co2Sensor.setDriveMode(CCS811_DRIVE_MODE_10SEC);
     co2Sensor.enableInterrupt();
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     digitalWrite(CCS_811_nWAKE, HIGH); //Disable Logic Engine
-    attachInterrupt(digitalPinToInterrupt(CCS_811_INTERRUPT_PIN), setReadFlagISRCallback, FALLING); //NOTE ALTERNATIVE IS LOW
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -
     //After ~80 seconds of non responsivness, Watchdog will reset the MCU.*/
     //Watchdog.enable(80000); //TODO reenable Watchdog

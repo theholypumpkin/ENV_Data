@@ -7,15 +7,12 @@
 #include <DHT.h>
 #include <DHT_U.h>
 #include <Adafruit_CCS811.h>
-#include "GP2YDustSensor.h"
 #include <ArduinoJson.h>
 #include <JC_Button.h>
 #include <EEPROM.h>
 #include <Adafruit_SleepyDog.h>
 /*================================================================================================*/
-#define RANDOM_SEED_ADC_PIN A1 // NOTE NEVER CONNECT A SENSOR TO THIS PIN
-#define SHARP_LED_PIN 6
-#define SHARP_VO_PIN A0 
+#define RANDOM_SEED_ADC_PIN A0 // NOTE NEVER CONNECT A SENSOR TO THIS PIN
 #define CCS_811_INTERRUPT_PIN 7 // 0,1 are UART, 2,3 are i2c so 7 is the only remaining pin 
 #define CCS_811_nWAKE 4
 #define DHTPIN 5
@@ -26,19 +23,17 @@ enum statemachine_t
 {
     READ_DHT_SENSOR,
     READ_CCS_SENSOR,
-    READ_GP2Y_SENSOR,
     TRANSMIT_SERIAL,
     IDLE
 };
 
 volatile statemachine_t e_state = IDLE;
 /*================================================================================================*/
-uint16_t g_uuid, g_loopCount = 0;
+uint16_t g_uuid;
 volatile bool b_isrFlag = false; //a flag which is flipped inside an isr
 /*________________________________________________________________________________________________*/
 DHT tempHmdSensor(DHTPIN, DHTTYPE); //Create the DHT object
 Adafruit_CCS811 co2Sensor;
-GP2YDustSensor dustSensor(GP2YDustSensorType::GP2Y1010AU0F, SHARP_LED_PIN, SHARP_VO_PIN);
 /*================================================================================================*/
 void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
@@ -55,7 +50,6 @@ void setup() {
     digitalWrite(CCS_811_nWAKE, LOW); //Enable Logic engine of CCS811
     delayMicroseconds(55); // Time until active after nWAKE asserted = 50 us
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    dustSensor.begin();
     tempHmdSensor.begin();
     if(!co2Sensor.begin()){
         while(1){
@@ -87,12 +81,6 @@ void loop() {
     static bool b_ENVDataCorrection;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     if(b_isrFlag){
-        if(g_loopCount < 60) {
-            //because we trigger this at the start of loop g_loopCount will be 0 after 60 iterations
-            g_loopCount++; 
-        } else {
-            g_loopCount = 0;
-        }
         e_state = READ_DHT_SENSOR; //This is safer than setting the vlaue inside the ISR itself
         b_isrFlag = false;
     }
@@ -113,33 +101,14 @@ void loop() {
         }else{
             readCCSSensor(eco2Value, tvocValue);
         }
-        e_state = READ_GP2Y_SENSOR;
-        break;
-    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    case READ_GP2Y_SENSOR:
-        dustDensityValue = readGP2YSensor();
-        if(g_loopCount == 0){ //this will occur only after 60 readings ~1h
-            dustSensorBaseline = readGPY2SensorBaselineCanidate();
-        }
         e_state = TRANSMIT_SERIAL;
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case TRANSMIT_SERIAL:
         if(b_ENVDataCorrection){
-            if(g_loopCount == 0){
-                transmitSerial(eco2Value, tvocValue, dustDensityValue, 
-                    temperatureValue, humidityValue, dustSensorBaseline);
-            }else{
-                transmitSerial(eco2Value, tvocValue, dustDensityValue, 
-                    temperatureValue, humidityValue);
-            }
-
+            transmitSerial(eco2Value, tvocValue, temperatureValue, humidityValue);
         }else{
-            if(g_loopCount == 0){
-                transmitSerial(eco2Value, tvocValue, dustDensityValue, dustSensorBaseline);
-            }else{
-                transmitSerial(eco2Value, tvocValue, dustDensityValue);
-            }
+            transmitSerial(eco2Value, tvocValue);
         }
         e_state = IDLE; //set the loop to idle until new interrupt triggers a change.
         Watchdog.reset();
@@ -249,27 +218,6 @@ void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue,
 }
 /*________________________________________________________________________________________________*/
 /**
- * @brief Get average dust density between numSamples in ug/m3 
- * 
- * @param numberOfSamples The number of samples which should be taken. The default is 20
- * @return uint16_t dust density between 0 and 600 ug/m3 
- */
-uint16_t readGP2YSensor(uint16_t numberOfSamples = (uint16_t)20U){
-    return dustSensor.getDustDensity(numberOfSamples);
-}
-/*________________________________________________________________________________________________*/
-/**
- * @brief Reads and set the Baseline for the sensor to adjust for sensor-drift over time
- * 
- * @return float the baseline
- */
-float readGPY2SensorBaselineCanidate(){
-    float baseline = dustSensor.getBaselineCandidate();
-    dustSensor.setBaseline(baseline); //Adjusts for sensor-drift
-    return baseline;
-}
-/*________________________________________________________________________________________________*/
-/**
  * @brief Gets the Current Temperature and Humidity
  * 
  * @param temperatureValue A Reference where the temperature Value should be saved at
@@ -297,8 +245,8 @@ bool readDHTSensor(float &temperatureValue, float &humidityValue){
  * @param humidityValue The Read Humidity Value 
  * @param dustSensorBaseline The dust Sensor baseline when available
  */
-void transmitSerial(uint16_t eco2Value, uint16_t tvocValue, uint16_t dustDensityValue,
-    float temperatureValue, float humidityValue, float dustSensorBaseline){
+void transmitSerial(uint16_t eco2Value, uint16_t tvocValue,
+    float temperatureValue, float humidityValue){
     
     StaticJsonDocument<100> json; //create a json object //NOTE size of document check
     json["measurement"].set(g_influxDbMeasurement);
@@ -309,8 +257,6 @@ void transmitSerial(uint16_t eco2Value, uint16_t tvocValue, uint16_t dustDensity
     json["fields"]["TVOC"].set(tvocValue);
     json["fields"]["temperature"].set(temperatureValue);
     json["fields"]["humidity"].set(humidityValue);
-    json["fields"]["dust density"].set(dustDensityValue);
-    json["fields"]["dust baseline"].set(dustSensorBaseline);
     
     while(!Serial); //Because we have USB Serial, we do not have to begin Serial
     serializeJson(json,Serial);
@@ -328,8 +274,7 @@ void transmitSerial(uint16_t eco2Value, uint16_t tvocValue, uint16_t dustDensity
  * @param dustDensityValue The read Dust Density Value
  * @param dustSensorBaseline The dust Sensor baseline when available
  */
-void transmitSerial(uint16_t eco2Value, uint16_t tvocValue, uint16_t dustDensityValue,
-    float dustSensorBaseline){
+void transmitSerial(uint16_t eco2Value, uint16_t tvocValue){
     
     StaticJsonDocument<100> json; //create a json object //NOTE size of document check
     json["measurement"].set(g_influxDbMeasurement);
@@ -338,63 +283,7 @@ void transmitSerial(uint16_t eco2Value, uint16_t tvocValue, uint16_t dustDensity
     json["tags"]["name"].set(g_name);
     json["fields"]["eCO2"].set(eco2Value);
     json["fields"]["TVOC"].set(tvocValue);
-    json["fields"]["dust density"].set(dustDensityValue);
-    json["fields"]["dust baseline"].set(dustSensorBaseline);
     
-    while(!Serial); //Because we have USB Serial, we do not have to begin Serial
-    serializeJson(json,Serial);
-    Serial.println();
-    Serial.flush(); //clear output buffer   
-}
-/*________________________________________________________________________________________________*/
-/**
- * @brief Sends the Read Sensor values via the Serial interface to the Server to be saved in the
- * database.
- * 
- * @param eco2Value The read CO2 Value
- * @param tvocValue The read TVOC Value
- * @param dustDensityValue The read Dust Density Value
- * @param temperatureValue The read Temperature Value
- * @param humidityValue The Read Humidity Value
- */
-void transmitSerial(uint16_t eco2Value, uint16_t tvocValue, uint16_t dustDensityValue,
-    float temperatureValue, float humidityValue){
-    
-    StaticJsonDocument<100> json; //create a json object //NOTE size of document check
-    json["measurement"].set(g_influxDbMeasurement);
-    json["tags"]["location"].set(g_location);
-    json["tags"]["uuid"].set(g_uuid);
-    json["tags"]["name"].set(g_name);
-    json["fields"]["eCO2"].set(eco2Value);
-    json["fields"]["TVOC"].set(tvocValue);
-    json["fields"]["temperature"].set(temperatureValue);
-    json["fields"]["humidity"].set(humidityValue);
-    json["fields"]["dust density"].set(dustDensityValue);
-    while(!Serial); //Because we have USB Serial, we do not have to begin Serial
-    serializeJson(json,Serial);
-    Serial.println();
-    Serial.flush(); //clear output buffer
-       
-}
-/*________________________________________________________________________________________________*/
-/**
- * @brief Sends the Read Sensor values via the Serial interface to the Server to be saved in the
- * database.
- * 
- * @param eco2Value The read CO2 Value
- * @param tvocValue The read TVOC Value
- * @param dustDensityValue The read Dust Density Value
- */
-void transmitSerial(uint16_t eco2Value, uint16_t tvocValue, uint16_t dustDensityValue){
-    
-    StaticJsonDocument<100> json; //create a json object //NOTE size of document check
-    json["measurement"].set(g_influxDbMeasurement);
-    json["tags"]["location"].set(g_location);
-    json["tags"]["uuid"].set(g_uuid);
-    json["tags"]["name"].set(g_name);
-    json["fields"]["eCO2"].set(eco2Value);
-    json["fields"]["TVOC"].set(tvocValue);
-    json["fields"]["dust density"].set(dustDensityValue);
     while(!Serial); //Because we have USB Serial, we do not have to begin Serial
     serializeJson(json,Serial);
     Serial.println();

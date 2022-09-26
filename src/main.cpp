@@ -5,53 +5,87 @@
 #include "secrets.hpp"
 #include <SPI.h>
 #include <Ethernet.h>
+#include <EthernetUdp.h>
 #include <EthernetClient.h>
+#include <NTPClient.h>
+#include <Dns.h>
+#include <Dhcp.h>
 #include <DHT.h>
 #include <DHT_U.h>
 #include <Adafruit_CCS811.h>
 #include <ArduinoJson.h>
-#include <JC_Button.h>
 #include <PubSubClient.h>
+#include "epd7in5b.h"
+#include "epdif.h"
+#include <ThreeWire.h>
+#include <RtcDS1302.h>
 #include <math.h>
-#include <Adafruit_SleepyDog.h>
-/* SAMD21. SAMD51 chips do not have EEPROM. This library provides an EEPROM-like API and hence
- * allows the same code to be used.
- */
-#include <FlashAsEEPROM.h>  
+//#include <Adafruit_SleepyDog.h> //incompatible with megaAVR architecture
+#include <LinkedList.h>
+#include <EEPROM.h>  
 /*================================================================================================*/
 #define RANDOM_SEED_ADC_PIN A1 // NOTE NEVER CONNECT A SENSOR TO THIS PIN
-#define BATTERY_VOLTAGE_ADC_PIN A7
-#define CCS_811_INTERRUPT_PIN 7 // 0,1 are UART, 2,3 are i2c so 7 is the only remaining pin 
-#define CCS_811_nWAKE 4
-#define DHTPIN 5
+#define CCS_811_INTERRUPT_PIN 15 //TODO: Change but unlikly
+#define CCS_811_nWAKE 4 //TODO: Change
+#define MCP23S17_CS_PIN 6 //SPI-Shiftregister //TODO: Change
+#define MCP3002_CS_PIN 8 //SPI-ADC //TODO: Change
+#define W5500_CS_PIN 9 //TODO: Change
+#define RTC_CLK_PIN 10 //TODO: Change
+#define RTC_DAT_PIN 11 //TODO: Change
+#define RTC_RST_PIN 12 //TODO: Change
+#define DHTPIN 5 //TODO: Change
 #define DHTTYPE DHT22
-#define EEPROM_CLEAR_BUTTON_PIN 20 //TODO maybe change the pin
+#define EEPROM_CLEAR_BUTTON_PIN 20 //TODO: Change
+//NOTE E-Paper SPI pins are defined in library (maybe change?)
 /*================================================================================================*/
 enum statemachine_t
 {
     READ_DHT_SENSOR,
     READ_CCS_SENSOR,
-    TRANSMIT_SERIAL,
+    UPDATE_NTP_CLOCK,
+    READ_REAL_TIME_CLOCK,
+    E_PAPER_DISPLAY_PARTIL_UPDATE,
+    E_PAPER_DISPLAY_FULL_UPDATE,
     PUBLISH_MQTT,
     IDLE
 };
 
 volatile statemachine_t e_state = IDLE;
 /*================================================================================================*/
+LinkedList<uint16_t> g_eco2ValuesList; //60*(16+16+16) = Value+next_ptr+pre_pnt 2,8k RAM
+LinkedList<uint16_t> g_tvocValuesList; //60*(16+16+16) = Value+next_ptr+pre_pnt 2,8k RAM
+LinkedList<float> g_temperatureValuesList; //60*(32+16+16) = Value+next_ptr+pre_pnt 3,8k RAM
+LinkedList<float> g_humidityValuesList; //60*(16+16+16) = Value+next_ptr+pre_pnt 3,8k RAM
+//NOTE having 60 Values for each linked list would be 10k+ of RAM, which is more than available
+// The Change over 10 minutes wouldn't be sufficently noticeable
+// Option 1 would be to only add every 10th reading to the list. This would result in ca 2.3k of RAM
+// Option 2 run mean on the list every 10 values or have a temp array which stores 10 readings
+// and than means those before appending them to the list
 uint16_t g_uuid;
 volatile bool b_isrFlag = false; //a flag which is flipped inside an isr
+const byte MAC_ADDR[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED}; //TODO maybe this has to be changed if I have this address already in the network
 /*________________________________________________________________________________________________*/
+Epd ePaperDisplay;
+ThreeWire myWire(RTC_DAT_PIN, RTC_CLK_PIN, RTC_RST_PIN); // DAT, CLK, RST
+RtcDS1302<ThreeWire> rtc(myWire);
 DHT tempHmdSensor(DHTPIN, DHTTYPE); //Create the DHT object
 Adafruit_CCS811 co2Sensor;
-WiFiClient wifiClient;
-PubSubClient mqttClient(g_mqttServerUrl, g_mqttServerPort, wifiClient);
+EthernetClient ethClient;
+PubSubClient mqttClient(g_mqttServerUrl, g_mqttServerPort, ethClient);
 /*================================================================================================*/
 void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
     pinMode(CCS_811_nWAKE, OUTPUT);
-    analogReadResolution(ADC_RESOLUTION);
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    Ethernet.init(W5500_CS_PIN);
+    if(!Ethernet.begin(MAC_ADDR)){
+        //TODO EERROR VIA SERIAL OR SOMEWHERE ELSE
+    }
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    setupNetworkTime();
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     setupEEPROM();
+    //TODO begin MCP23s17 and MCP3002
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -
     * Attach Hardware interrupt BEFORE Setting up the CCS 811 sensor, because of a race condition.
     * It cloud happen, that the pin was already driven sow by the sensor, before we attach the
@@ -78,10 +112,12 @@ void setup() {
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     //NOTE when message is greater than 256 than we have to call mqtt.setBuffer(bufferSize); 
     mqttClient.setKeepAlive(70); //keep connection alive for 70 seconds
-    WiFi.begin(g_wifiSsid, g_wifiPass);
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    ePaperDisplay.Init();
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -
+    //TODO need a new watchdog!
     //After ~80 seconds of non responsivness, Watchdog will reset the MCU.*/
-    Watchdog.enable(80000);
+    //Watchdog.enable(80000);
 }
 /*________________________________________________________________________________________________*/
 /**
@@ -93,8 +129,9 @@ void setup() {
 void loop() {
     //make static to retain variables even if out of scope.
     static uint16_t eco2Value, tvocValue;
-    static float temperatureValue, humidityValue, batteryPercentage, batteryVoltage;
+    static float temperatureValue, humidityValue;
     static bool b_ENVDataCorrection;
+    static String timeString;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     if(b_isrFlag){
         e_state = READ_DHT_SENSOR; //This is safer than setting the vlaue inside the ISR itself
@@ -117,7 +154,7 @@ void loop() {
         }else{
             readCCSSensor(eco2Value, tvocValue);
         }
-        e_state = READ_BATTERY;
+        e_state = PUBLISH_MQTT;
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case PUBLISH_MQTT:
@@ -125,10 +162,9 @@ void loop() {
             /*client_ID, Username, passwd*/
             if(mqttClient.connect(g_name, g_mqttUsername, g_mqttPassword)){
                 if(b_ENVDataCorrection){
-                    publishMQTT(eco2Value, tvocValue, temperatureValue, humidityValue, 
-                        batteryVoltage, batteryPercentage);
+                    publishMQTT(eco2Value, tvocValue, temperatureValue, humidityValue);
                 }else{
-                    publishMQTT(eco2Value,tvocValue, batteryVoltage, batteryPercentage);
+                    publishMQTT(eco2Value,tvocValue);
                 }
             }else{
                 const char *errorLUT[] = {
@@ -150,14 +186,38 @@ void loop() {
             }
         }
         mqttClient.loop();
-        Watchdog.reset();
-        e_state = IDLE;
+        //Watchdog.reset();
+        e_state = READ_REAL_TIME_CLOCK;
+        break;
+    case READ_REAL_TIME_CLOCK:
+        RtcDateTime now = rtc.GetDateTime();
+        if(!now.IsValid()){
+            //TODO refresh time with NTP time, Notifiy on E-paper that rtc battery is low or power not connected
+        }
+        else{
+            //Get the time to display on epd
+            timeString = String(now.Hour()) + ":" + String(now.Minute());
+        }
+        e_state = E_PAPER_DISPLAY_PARTIL_UPDATE
+        break;
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    case E_PAPER_DISPLAY_PARTIL_UPDATE:
+        break;
+    case E_PAPER_DISPLAY_FULL_UPDATE:
+        break;
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    case UPDATE_NTP_CLOCK:
+        EthernetUDP ntpUDPObject;
+        NTPClient ntpClient(ntpUDPObject, g_ntpTimeServerURL);
+        ntpClient.begin();
+        updateNetworkTime(ntpUDPObject, ntpClient);
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case IDLE:
     default:
-        Watchdog.sleep(); //sleep until we woken up by interrupt?
-        USBDevice.attach();
+    //TODO need new watchdog
+        //Watchdog.sleep(); //sleep until we woken up by interrupt?
+        break;
     }
 }
 /*________________________________________________________________________________________________*/
@@ -170,24 +230,66 @@ void setReadFlagISRCallback(){
 }
 /*________________________________________________________________________________________________*/
 /**
+ * @brief Sets Up the DS1302 RTC with the time fetched from the NTP server when possible, else
+ * it sets it to the compiled time 
+ */
+void setupNetworkTime(){
+    rtc.Begin();
+    EthernetUDP ntpUDPObject;
+    NTPClient ntpClient(ntpUDPObject, g_ntpTimeServerURL);
+    ntpClient.begin();
+    //If we cant establish a connection to the server
+    if(!rtc.IsDateTimeValid()){
+        if(!ntpClient.update()){
+            RtcDateTime compiled = RtcDateTime(__DATE__, __TIME__);
+            rtc.SetDateTime(compiled);
+        }
+        else
+            updateNetworkTime(ntpUDPObject, ntpClient);
+    }
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    if (rtc.GetIsWriteProtected())
+        rtc.SetIsWriteProtected(false);
+
+    if (!rtc.GetIsRunning())
+        rtc.SetIsRunning(true);
+    /* Because we update the RTC at least daily, we don't set a new time in setup exect if the 
+     * date is invalid
+     */
+}
+/*________________________________________________________________________________________________*/
+/**
+ * @brief updates the RTC with the current Network time on a regular basis to stay in sync.
+ */
+void updateNetworkTime(EthernetUDP ntpUDPObject, NTPClient ntpClient){
+    //If we cant establish a connection to the server
+    if(ntpClient.update()){
+        unsigned long epochTime = ntpClient.getEpochTime() - 946684800; //substract 30 years
+        RtcDateTime network = RtcDateTime(epochTime);
+        rtc.SetDateTime(network);
+    }
+}
+/*________________________________________________________________________________________________*/
+/**
  * @brief writes a random UUID to EEPROM (on SAMD chips to Flash) if never set, else it reads the
  * existing UUID from the EEPROM (or on SAMD chips to Flash). If in the first 5 seconds of the setup
  * a button is pressed, it will clear the flash and generate a new UUID
  */
 void setupEEPROM(){
-    
-    Button eepromClearButton(EEPROM_CLEAR_BUTTON_PIN);
-    eepromClearButton.begin();
+    //BUG TEMPORORAY COMMENTED OUT
+    /*Button eepromClearButton(EEPROM_CLEAR_BUTTON_PIN);
+    eepromClearButton.begin();*/
     unsigned long loopEnd = millis() + 5000;
     while(millis() < loopEnd){ //check for 5 seconds if the button is pressed
-        eepromClearButton.read();
+        //BUG TEMPORORAY COMMENTED OUT
+        /*eepromClearButton.read();
         if(eepromClearButton.isPressed()){
             // This loop will take about 3.3*256 ms to complete which is about 0.85 seconds.
             for (uint16_t i = 0 ; i < EEPROM.length() ; i++) {
                 EEPROM.write(i, 0);
             }
             break; //when we reset the eeprom terminate the while loop
-        }
+        }*/
     }
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     /* For compability reasons and portability to other microcontroller we will not use the more
@@ -283,7 +385,7 @@ bool readDHTSensor(float &temperatureValue, float &humidityValue){
  * @param dustDensityValue The read Dust Density Value
  * @param dustSensorBaseline The dust Sensor baseline when available
  */
-void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, uint16_t, float voltage, float percentage){
+void publishMQTT(uint16_t eco2Value, uint16_t tvocValue){
     
     StaticJsonDocument<100> json; //create a json object //NOTE size of document check
     json["tags"]["location"].set(g_location);
@@ -291,8 +393,6 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, uint16_t, float voltage
     json["tags"]["name"].set(g_name);
     json["fields"]["eCO2"].set(eco2Value);
     json["fields"]["TVOC"].set(tvocValue);
-    json["fields"]["Battery Voltage"].set(voltage);
-    json["fields"]["Battery Percentage"].set(percentage);
     //using a buffer speeds up the mqtt publishing process by over 100x
     char mqttJsonBuffer[100];
     size_t n = serializeJson(json, mqttJsonBuffer); //saves a bit of time when publishing
@@ -310,7 +410,7 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, uint16_t, float voltage
  * @param humidityValue The Read Humidity Value
  */
 void publishMQTT(uint16_t eco2Value, uint16_t tvocValue,
-    float temperatureValue, float humidityValue, float voltage, float percentage){
+    float temperatureValue, float humidityValue){
     StaticJsonDocument<100> json; //create a json object //NOTE size of document check
     //json["measurement"].set(g_influxDbMeasurement);
     json["tags"]["location"].set(g_location);
@@ -320,8 +420,6 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue,
     json["fields"]["TVOC"].set(tvocValue);
     json["fields"]["temperature"].set(temperatureValue);
     json["fields"]["humidity"].set(humidityValue);
-    json["fields"]["Battery Voltage"].set(voltage);
-    json["fields"]["Battery Percentage"].set(percentage);
     //using a buffer speeds up the mqtt publishing process by over 100x
     char mqttJsonBuffer[100];
     size_t n = serializeJson(json, mqttJsonBuffer);

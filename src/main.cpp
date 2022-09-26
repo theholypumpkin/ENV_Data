@@ -4,15 +4,23 @@
 #include "main.hpp"
 #include "secrets.hpp"
 #include <SPI.h>
+#include <Ethernet.h>
+#include <EthernetClient.h>
 #include <DHT.h>
 #include <DHT_U.h>
 #include <Adafruit_CCS811.h>
 #include <ArduinoJson.h>
 #include <JC_Button.h>
-#include <EEPROM.h>
+#include <PubSubClient.h>
+#include <math.h>
 #include <Adafruit_SleepyDog.h>
+/* SAMD21. SAMD51 chips do not have EEPROM. This library provides an EEPROM-like API and hence
+ * allows the same code to be used.
+ */
+#include <FlashAsEEPROM.h>  
 /*================================================================================================*/
-#define RANDOM_SEED_ADC_PIN A0 // NOTE NEVER CONNECT A SENSOR TO THIS PIN
+#define RANDOM_SEED_ADC_PIN A1 // NOTE NEVER CONNECT A SENSOR TO THIS PIN
+#define BATTERY_VOLTAGE_ADC_PIN A7
 #define CCS_811_INTERRUPT_PIN 7 // 0,1 are UART, 2,3 are i2c so 7 is the only remaining pin 
 #define CCS_811_nWAKE 4
 #define DHTPIN 5
@@ -24,6 +32,7 @@ enum statemachine_t
     READ_DHT_SENSOR,
     READ_CCS_SENSOR,
     TRANSMIT_SERIAL,
+    PUBLISH_MQTT,
     IDLE
 };
 
@@ -34,10 +43,13 @@ volatile bool b_isrFlag = false; //a flag which is flipped inside an isr
 /*________________________________________________________________________________________________*/
 DHT tempHmdSensor(DHTPIN, DHTTYPE); //Create the DHT object
 Adafruit_CCS811 co2Sensor;
+WiFiClient wifiClient;
+PubSubClient mqttClient(g_mqttServerUrl, g_mqttServerPort, wifiClient);
 /*================================================================================================*/
 void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
     pinMode(CCS_811_nWAKE, OUTPUT);
+    analogReadResolution(ADC_RESOLUTION);
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     setupEEPROM();
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -
@@ -63,6 +75,10 @@ void setup() {
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     delayMicroseconds(25); //Logic engine should run at least 20 us
     digitalWrite(CCS_811_nWAKE, HIGH); //Disable Logic Engine
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    //NOTE when message is greater than 256 than we have to call mqtt.setBuffer(bufferSize); 
+    mqttClient.setKeepAlive(70); //keep connection alive for 70 seconds
+    WiFi.begin(g_wifiSsid, g_wifiPass);
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -
     //After ~80 seconds of non responsivness, Watchdog will reset the MCU.*/
     Watchdog.enable(80000);
@@ -76,8 +92,8 @@ void setup() {
  */
 void loop() {
     //make static to retain variables even if out of scope.
-    static uint16_t eco2Value, tvocValue, dustDensityValue;
-    static float temperatureValue, humidityValue, dustSensorBaseline;
+    static uint16_t eco2Value, tvocValue;
+    static float temperatureValue, humidityValue, batteryPercentage, batteryVoltage;
     static bool b_ENVDataCorrection;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     if(b_isrFlag){
@@ -101,23 +117,47 @@ void loop() {
         }else{
             readCCSSensor(eco2Value, tvocValue);
         }
-        e_state = TRANSMIT_SERIAL;
+        e_state = READ_BATTERY;
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    case TRANSMIT_SERIAL:
-        if(b_ENVDataCorrection){
-            transmitSerial(eco2Value, tvocValue, temperatureValue, humidityValue);
-        }else{
-            transmitSerial(eco2Value, tvocValue);
+    case PUBLISH_MQTT:
+        while(!mqttClient.connected()){
+            /*client_ID, Username, passwd*/
+            if(mqttClient.connect(g_name, g_mqttUsername, g_mqttPassword)){
+                if(b_ENVDataCorrection){
+                    publishMQTT(eco2Value, tvocValue, temperatureValue, humidityValue, 
+                        batteryVoltage, batteryPercentage);
+                }else{
+                    publishMQTT(eco2Value,tvocValue, batteryVoltage, batteryPercentage);
+                }
+            }else{
+                const char *errorLUT[] = {
+                    "MQTT_DISCONNECTED",
+                    "MQTT_CONNECT_FAILED",
+                    "MQTT_CONNECTION_LOST",
+                    "MQTT_CONNECTION_TIMEOUT",
+                    "MQTT_CONNECTED", 
+                    "MQTT_CONNECT_BAD_PROTOCOL", 
+                    "MQTT_CONNECT_BAD_CLIENT_ID", 
+                    "MQTT_CONNECT_UNAVAILABLE", 
+                    "MQTT_CONNECT_BAD_CREDENTIALS", 
+                    "MQTT_CONNECT_UNAUTHORIZED"
+                    };
+                uint8_t errorMsqIndex = mqttClient.state()+4;
+                Serial.println(errorLUT[errorMsqIndex]);
+                //wait 5 sec and try again, until we are connected or the watchdog resets the mcu.
+                delay(5000); 
+            }
         }
-        e_state = IDLE; //set the loop to idle until new interrupt triggers a change.
+        mqttClient.loop();
         Watchdog.reset();
+        e_state = IDLE;
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case IDLE:
     default:
-        delay(10); //Slow down a little bit
-        break;
+        Watchdog.sleep(); //sleep until we woken up by interrupt?
+        USBDevice.attach();
     }
 }
 /*________________________________________________________________________________________________*/
@@ -223,7 +263,7 @@ void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue,
  * @param temperatureValue A Reference where the temperature Value should be saved at
  * @param humidityValue A Reference where the humidity Value should be saved at
  * @return true if the Reading was sucessful
- * @return false if the reading was unsucessful and the read value is 'Not A Number'
+ * @return false if the reading was unsucessful and the read value is "Not A Number"
  */
 bool readDHTSensor(float &temperatureValue, float &humidityValue){
     temperatureValue = tempHmdSensor.readTemperature();
@@ -241,28 +281,22 @@ bool readDHTSensor(float &temperatureValue, float &humidityValue){
  * @param eco2Value The read CO2 Value
  * @param tvocValue The read TVOC Value
  * @param dustDensityValue The read Dust Density Value
- * @param temperatureValue The read Temperature Value
- * @param humidityValue The Read Humidity Value 
  * @param dustSensorBaseline The dust Sensor baseline when available
  */
-void transmitSerial(uint16_t eco2Value, uint16_t tvocValue,
-    float temperatureValue, float humidityValue){
+void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, uint16_t, float voltage, float percentage){
     
     StaticJsonDocument<100> json; //create a json object //NOTE size of document check
-    json["measurement"].set(g_influxDbMeasurement);
     json["tags"]["location"].set(g_location);
     json["tags"]["uuid"].set(g_uuid);
     json["tags"]["name"].set(g_name);
     json["fields"]["eCO2"].set(eco2Value);
     json["fields"]["TVOC"].set(tvocValue);
-    json["fields"]["temperature"].set(temperatureValue);
-    json["fields"]["humidity"].set(humidityValue);
-    
-    while(!Serial); //Because we have USB Serial, we do not have to begin Serial
-    serializeJson(json,Serial);
-    Serial.println();
-    Serial.flush(); //clear output buffer
-       
+    json["fields"]["Battery Voltage"].set(voltage);
+    json["fields"]["Battery Percentage"].set(percentage);
+    //using a buffer speeds up the mqtt publishing process by over 100x
+    char mqttJsonBuffer[100];
+    size_t n = serializeJson(json, mqttJsonBuffer); //saves a bit of time when publishing
+    mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
 }
 /*________________________________________________________________________________________________*/
 /**
@@ -272,22 +306,25 @@ void transmitSerial(uint16_t eco2Value, uint16_t tvocValue,
  * @param eco2Value The read CO2 Value
  * @param tvocValue The read TVOC Value
  * @param dustDensityValue The read Dust Density Value
- * @param dustSensorBaseline The dust Sensor baseline when available
+ * @param temperatureValue The read Temperature Value
+ * @param humidityValue The Read Humidity Value
  */
-void transmitSerial(uint16_t eco2Value, uint16_t tvocValue){
-    
+void publishMQTT(uint16_t eco2Value, uint16_t tvocValue,
+    float temperatureValue, float humidityValue, float voltage, float percentage){
     StaticJsonDocument<100> json; //create a json object //NOTE size of document check
-    json["measurement"].set(g_influxDbMeasurement);
+    //json["measurement"].set(g_influxDbMeasurement);
     json["tags"]["location"].set(g_location);
     json["tags"]["uuid"].set(g_uuid);
     json["tags"]["name"].set(g_name);
     json["fields"]["eCO2"].set(eco2Value);
     json["fields"]["TVOC"].set(tvocValue);
-    
-    while(!Serial); //Because we have USB Serial, we do not have to begin Serial
-    serializeJson(json,Serial);
-    Serial.println();
-    Serial.flush(); //clear output buffer   
+    json["fields"]["temperature"].set(temperatureValue);
+    json["fields"]["humidity"].set(humidityValue);
+    json["fields"]["Battery Voltage"].set(voltage);
+    json["fields"]["Battery Percentage"].set(percentage);
+    //using a buffer speeds up the mqtt publishing process by over 100x
+    char mqttJsonBuffer[100];
+    size_t n = serializeJson(json, mqttJsonBuffer);
+    mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
 }
-
 /*end of file*/

@@ -12,7 +12,8 @@
 #include <JC_Button.h>
 #include <PubSubClient.h>
 #include <math.h>
-#include <Adafruit_SleepyDog.h>
+#include <LowPower.h>
+#include <RTCZero.h>
 /* SAMD21. SAMD51 chips do not have EEPROM. This library provides an EEPROM-like API and hence
  * allows the same code to be used.
  */

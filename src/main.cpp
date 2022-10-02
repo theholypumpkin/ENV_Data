@@ -5,6 +5,8 @@
 #include "secrets.hpp"
 #include <SPI.h>
 #include <WiFiNINA.h>
+#include <WiFiUdp.h>
+#include <NTPClient.h>
 #include <DHT.h>
 #include <DHT_U.h>
 #include <Adafruit_CCS811.h>
@@ -12,8 +14,7 @@
 #include <JC_Button.h>
 #include <PubSubClient.h>
 #include <math.h>
-#include <LowPower.h>
-#include <RTCZero.h>
+#include <RTCZero.h> //Also inplements sleep
 /* SAMD21. SAMD51 chips do not have EEPROM. This library provides an EEPROM-like API and hence
  * allows the same code to be used.
  */
@@ -40,16 +41,16 @@ enum statemachine_t
 
 volatile statemachine_t e_state = IDLE;
 /*================================================================================================*/
+uint8_t g_lastRtcUpdateDay;
 uint16_t g_uuid;
 const float MAX_BATTERY_VOLTAGE = 4.2,
             ADC_VOLTAGE_FACTOR = MAX_BATTERY_VOLTAGE / powf(2.0, ADC_RESOLUTION);
 
 volatile bool b_isrFlag = false; // a flag which is flipped inside an isr
 /*________________________________________________________________________________________________*/
+RTCZero rtc;
 DHT tempHmdSensor(DHTPIN, DHTTYPE); // Create the DHT object
 Adafruit_CCS811 co2Sensor;
-WiFiClient wifiClient;
-PubSubClient mqttClient(g_mqttServerUrl, g_mqttServerPort, wifiClient);
 /*================================================================================================*/
 void setup()
 {
@@ -58,7 +59,9 @@ void setup()
     analogReadResolution(ADC_RESOLUTION);
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     setupEEPROM();
-    Serial1.begin(115200);            // Use Hardware Serial (not USB Serial) to send debugging messages
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    Serial1.begin(115200);            // Use Hardware Serial (not USB Serial) to debug
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     digitalWrite(CCS_811_nWAKE, LOW); // Enable Logic engine of CCS811
     delayMicroseconds(55);            // Time until active after nWAKE asserted = 50 us
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
@@ -78,21 +81,16 @@ void setup()
     delayMicroseconds(25);             // Logic engine should run at least 20 us
     digitalWrite(CCS_811_nWAKE, HIGH); // Disable Logic Engine
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    // NOTE when message is greater than 256 than we have to call mqtt.setBuffer(bufferSize);
-    mqttClient.setKeepAlive(70); // keep connection alive for 70 seconds
-    int wifiStatus = WiFi.begin(g_wifiSsid, g_wifiPass);
-    const char *wifiStatusLUT[] = {"WL_IDLE_STATUS",
-                                   "WL_NO_SSID_AVAIL",
-                                   "WL_SCAN_COMPLETED",
-                                   "WL_CONNECTED",
-                                   "WL_CONNECT_FAILED",
-                                   "WL_CONNECTION_LOST",
-                                   "WL_DISCONNECTED",
-                                   "WL_AP_LISTENING",
-                                   "WL_AP_CONNECTED",
-                                   "WL_AP_FAILED"};
-    Serial1.print("WiFiNINA Status: ");
-    Serial1.println(wifiStatusLUT[wifiStatus]);
+    rtc.begin(); //begin the rtc at "random time" probably  Jan 1 2000 at 00:00:00 o'clock
+    g_lastRtcUpdateDay = rtc.getDay();
+    if(updateNetworkTime()){ //set real time acording to network
+        Serial1.println("Network Time successful");
+    }else{
+        Serial1.println("ERROR: No Network Time");
+    }
+    rtc.setAlarmSeconds(0);
+    rtc.enableAlarm(rtc.MATCH_SS); //Set Alarm every full minute (when seconds are 0)
+    rtc.attachInterrupt(alarmISRCallback); //When alarm trigger this callback.
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     delay(10000); // give us some time to upload a new program
 }
@@ -112,15 +110,20 @@ void loop()
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     if (b_isrFlag)
     {
-        Serial1.println("Interrupt Triggered");
         e_state = READ_DHT_SENSOR; // This is safer than setting the vlaue inside the ISR itself
         b_isrFlag = false;
+    }
+    if(g_lastRtcUpdateDay != rtc.getDay()){ //update network time daily
+        if(updateNetworkTime()){ //set real time acording to network
+            Serial1.println("Network Time successful");
+        }else{
+            Serial1.println("ERROR: No Network Time");
+        }
     }
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     switch (e_state)
     {
     case READ_DHT_SENSOR:
-        Serial1.println("Read DHT");
         b_ENVDataCorrection = readDHTSensor(temperatureValue, humidityValue);
         /* Unnecessary because we don't break but improves readability
          * optimizer will likly remove it anyway
@@ -129,7 +132,6 @@ void loop()
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case READ_CCS_SENSOR:
-        Serial1.println("Read CCS");
         if (b_ENVDataCorrection)
         {
             readCCSSensor(eco2Value, tvocValue, temperatureValue, humidityValue);
@@ -142,68 +144,117 @@ void loop()
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case READ_BATTERY:
-        Serial1.println("Read BATTERY");
         batteryVoltage = analogRead(BATTERY_VOLTAGE_ADC_PIN) * ADC_VOLTAGE_FACTOR;
         batteryPercentage = calcBatteryPercentage(batteryVoltage);
         e_state = PUBLISH_MQTT;
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case PUBLISH_MQTT:
-        Serial1.println("Publish MQTT Attempt");
-        while (!mqttClient.connected())
-        {
-            /* Attempt to Connect!
-            client_ID, Username, passwd*/
-            if (mqttClient.connect(g_name, g_mqttUsername, g_mqttPassword))
+    //BUG this is junk
+        WiFiClient wifiClient;
+        PubSubClient mqttClient(g_mqttServerUrl, g_mqttServerPort, wifiClient);
+        //Configure static networking and set hostname for this paticular request
+        
+        WiFi.config(g_staticIPAddress, g_DNSAddress, g_gateway, g_subnet);
+        WiFi.setHostname(g_name);
+
+        //esablishing wifi connection
+        while(WiFi.begin(g_wifiSsid, g_wifiPass) != WL_CONNECTED){ //retry connect indef
+            delay(1000);
+            //TODO Wire gpio to reset pin and triger it after some time
+        }
+        
+        //reconnect To mqtt (returns imidiatly if alreay connected)
+        if(mqttReconnect(mqttClient)){
+            long wifiSignalStrength = WiFi.RSSI();
+            if (b_ENVDataCorrection)
             {
-                long wifiSignalStrength = WiFi.RSSI();
-                if (b_ENVDataCorrection)
-                {
-                    publishMQTT(eco2Value, tvocValue, wifiSignalStrength, temperatureValue, humidityValue,
-                                batteryVoltage, batteryPercentage);
-                }
-                else
-                {
-                    publishMQTT(eco2Value, tvocValue, wifiSignalStrength, batteryVoltage, batteryPercentage);
-                }
+                publishMQTT(eco2Value, tvocValue, wifiSignalStrength, temperatureValue, humidityValue,
+                            batteryVoltage, batteryPercentage);
             }
             else
             {
-                const char *errorLUT[] = {
-                    "MQTT_DISCONNECTED",
-                    "MQTT_CONNECT_FAILED",
-                    "MQTT_CONNECTION_LOST",
-                    "MQTT_CONNECTION_TIMEOUT",
-                    "MQTT_CONNECTED",
-                    "MQTT_CONNECT_BAD_PROTOCOL",
-                    "MQTT_CONNECT_BAD_CLIENT_ID",
-                    "MQTT_CONNECT_UNAVAILABLE",
-                    "MQTT_CONNECT_BAD_CREDENTIALS",
-                    "MQTT_CONNECT_UNAUTHORIZED"};
-                uint8_t errorMsqIndex = mqttClient.state() + 4;
-                Serial.println(errorLUT[errorMsqIndex]);
-                // wait 5 sec and try again, until we are connected or the watchdog resets the mcu.
-                delay(5000);
+                publishMQTT(eco2Value, tvocValue, wifiSignalStrength, batteryVoltage, batteryPercentage);
             }
         }
         mqttClient.loop();
         e_state = IDLE;
+        WiFi.lowPowerMode(); //maybe unnecessary but won't hurt
+        WiFi.end(); //We cant stay connected to WiFi it drains 30mA in Low Power Mode and 100mA w/o LP
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case IDLE:
     default:
-        delay(10);
+        //Go to sleep until Alarm wakes you
+        rtc.standbyMode();
         break;
     }
 }
 /*________________________________________________________________________________________________*/
 /**
  * @brief Set the Read Flag ISR Callback
- *
  */
-void setReadFlagISRCallback()
+void alarmISRCallback()
 {
     b_isrFlag = true;
+}
+/*________________________________________________________________________________________________*/
+/**
+ * @brief Connects to WiFi using a static IP-Address, DNS, Gateway and Subnet than
+ * it fetchs the latest network time and set the Real Time Clock to this time.
+ * Afterwards it disconnects from wifi to conserve battery.
+ */
+bool updateNetworkTime(){
+    //Configure static networking and set hostname for this paticular request
+    WiFi.config(g_staticIPAddress, g_DNSAddress, g_gateway, g_subnet);
+    WiFi.setHostname(g_name);
+
+    uint8_t connection_attempts = 0;
+    while(WiFi.begin(g_wifiSsid, g_wifiPass) != WL_CONNECTED){ //retry connect
+        connection_attempts++;
+        if(connection_attempts == 4){
+            return false; //return early
+        }
+        delay(1000);
+    }
+    WiFiUDP ntpUdpObject;
+    NTPClient ntpClient(ntpUdpObject, g_ntpTimeServerURL);
+    ntpClient.begin();
+    connection_attempts = 0;
+    while(!ntpClient.update()){ //attempt to connect to ntp server up to 5 times.
+        connection_attempts++;
+        if(connection_attempts == 4){
+            WiFi.end();
+            return false; //return early
+        }
+        delay(1000);
+    }
+    unsigned long epochTime = ntpClient.getEpochTime();
+    rtc.setEpoch(epochTime);
+    WiFi.lowPowerMode(); //maybe unnecessary but won't hurt
+    WiFi.end(); //We cant stay connected to WiFi it drains 30mA in Low Power Mode and 100mA w/o LP
+    g_lastRtcUpdateDay = rtc.getDay(); //set to actual day
+    return true;
+}
+/*________________________________________________________________________________________________*/
+/**
+ * @brief Attempt to reconnect to mqtt Server
+ * 
+ */
+bool mqttReconnect(PubSubClient &client) {
+  // Loop until we're reconnected
+    while (!client.connected()) {
+        if (client.connect(g_name, g_mqttUsername, g_mqttPassword)){
+            return true;
+        } else {
+            Serial1.print("failed, rc=");
+            Serial1.print(client.state());
+            Serial1.println(" try again in 5 seconds");
+            // Wait 1 seconds before retrying
+            delay(1000);
+        }
+    }
+    return true; //if we are already connected we return true imidiatly
 }
 /*________________________________________________________________________________________________*/
 /**

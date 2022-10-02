@@ -5,7 +5,7 @@
 #define _MAIN_HPP
 void setup();
 void loop();
-void setReadFlagISRCallback();
+void alarmISRCallback();
 void setupEEPROM();
 void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue);
 void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue,
@@ -17,4 +17,5 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
 
 void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi, float voltage, float percentage);
 float calcBatteryPercentage(float voltage);
+bool updateNetworkTime();
 #endif

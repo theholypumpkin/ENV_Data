@@ -34,7 +34,6 @@ enum statemachine_t
     READ_DHT_SENSOR,
     READ_CCS_SENSOR,
     READ_BATTERY,
-    TRANSMIT_SERIAL,
     PUBLISH_MQTT,
     IDLE
 };
@@ -51,6 +50,8 @@ volatile bool b_isrFlag = false; // a flag which is flipped inside an isr
 RTCZero rtc;
 DHT tempHmdSensor(DHTPIN, DHTTYPE); // Create the DHT object
 Adafruit_CCS811 co2Sensor;
+WiFiClient wifiClient;
+PubSubClient mqttClient(g_mqttServerUrl, g_mqttServerPort, wifiClient);
 /*================================================================================================*/
 void setup()
 {
@@ -121,8 +122,12 @@ void loop()
         }
     }
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    switch (e_state)
-    {
+    switch(e_state){
+        /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    case IDLE:
+        //Go to sleep until Alarm wakes you
+        rtc.standbyMode();
+        break;
     case READ_DHT_SENSOR:
         b_ENVDataCorrection = readDHTSensor(temperatureValue, humidityValue);
         /* Unnecessary because we don't break but improves readability
@@ -150,11 +155,7 @@ void loop()
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case PUBLISH_MQTT:
-    //BUG this is junk
-        WiFiClient wifiClient;
-        PubSubClient mqttClient(g_mqttServerUrl, g_mqttServerPort, wifiClient);
-        //Configure static networking and set hostname for this paticular request
-        
+        //Configure static networking and set hostname for this paticular request  
         WiFi.config(g_staticIPAddress, g_DNSAddress, g_gateway, g_subnet);
         WiFi.setHostname(g_name);
 
@@ -164,29 +165,23 @@ void loop()
             //TODO Wire gpio to reset pin and triger it after some time
         }
         
-        //reconnect To mqtt (returns imidiatly if alreay connected)
-        if(mqttReconnect(mqttClient)){
-            long wifiSignalStrength = WiFi.RSSI();
-            if (b_ENVDataCorrection)
-            {
-                publishMQTT(eco2Value, tvocValue, wifiSignalStrength, temperatureValue, humidityValue,
-                            batteryVoltage, batteryPercentage);
-            }
-            else
-            {
-                publishMQTT(eco2Value, tvocValue, wifiSignalStrength, batteryVoltage, batteryPercentage);
-            }
+        //reconnect To mqtt (returns imidiatly if already connected)
+        mqttReconnect();
+        long wifiSignalStrength = WiFi.RSSI();
+        if (b_ENVDataCorrection)
+        {
+            publishMQTT(eco2Value, tvocValue, wifiSignalStrength, temperatureValue, 
+            humidityValue, batteryVoltage, batteryPercentage);
+        }
+        else
+        {
+            publishMQTT(eco2Value, tvocValue, wifiSignalStrength, batteryVoltage, 
+            batteryPercentage);
         }
         mqttClient.loop();
         e_state = IDLE;
         WiFi.lowPowerMode(); //maybe unnecessary but won't hurt
         WiFi.end(); //We cant stay connected to WiFi it drains 30mA in Low Power Mode and 100mA w/o LP
-        break;
-    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    case IDLE:
-    default:
-        //Go to sleep until Alarm wakes you
-        rtc.standbyMode();
         break;
     }
 }
@@ -241,20 +236,17 @@ bool updateNetworkTime(){
  * @brief Attempt to reconnect to mqtt Server
  * 
  */
-bool mqttReconnect(PubSubClient &client) {
+void mqttReconnect() {
   // Loop until we're reconnected
-    while (!client.connected()) {
-        if (client.connect(g_name, g_mqttUsername, g_mqttPassword)){
-            return true;
-        } else {
+    while (!mqttClient.connected()) {
+        if (!mqttClient.connect(g_name, g_mqttUsername, g_mqttPassword)){
             Serial1.print("failed, rc=");
-            Serial1.print(client.state());
+            Serial1.print(mqttClient.state());
             Serial1.println(" try again in 5 seconds");
             // Wait 1 seconds before retrying
             delay(1000);
         }
     }
-    return true; //if we are already connected we return true imidiatly
 }
 /*________________________________________________________________________________________________*/
 /**
@@ -383,7 +375,8 @@ bool readDHTSensor(float &temperatureValue, float &humidityValue)
  * @param dustDensityValue The read Dust Density Value
  * @param dustSensorBaseline The dust Sensor baseline when available
  */
-void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi, float voltage, float percentage)
+void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi, 
+float voltage, float percentage)
 {
 
     StaticJsonDocument<200> json; // create a json object //NOTE size of document check

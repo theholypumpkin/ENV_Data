@@ -156,6 +156,9 @@ void loop()
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case PUBLISH_MQTT:
+        /*//Enable the NINA WiFi Modul by setting the internal pin high!
+        digitalWrite(27, HIGH);
+        delay(10);*/
         //Configure static networking and set hostname for this paticular request  
         WiFi.config(g_staticIPAddress, g_DNSAddress, g_gateway, g_subnet);
         WiFi.setHostname(g_name);
@@ -183,6 +186,8 @@ void loop()
         e_state = IDLE;
         WiFi.lowPowerMode(); //maybe unnecessary but won't hurt
         WiFi.end(); //We cant stay connected to WiFi it drains 30mA in Low Power Mode and 100mA w/o LP
+        /*delay(10);
+        digitalWrite(27, LOW); //Pull Reset of Nina WiFi Low to disable it and save even more Battery*/
         break;
     }
 }
@@ -201,6 +206,9 @@ void alarmISRCallback()
  * Afterwards it disconnects from wifi to conserve battery.
  */
 bool updateNetworkTime(){
+    /*//Enable the NINA WiFi Modul by setting the internal pin high!
+    digitalWrite(27, HIGH);
+    delay(10);*/
     //Configure static networking and set hostname for this paticular request
     WiFi.config(g_staticIPAddress, g_DNSAddress, g_gateway, g_subnet);
     WiFi.setHostname(g_name);
@@ -230,6 +238,8 @@ bool updateNetworkTime(){
     WiFi.lowPowerMode(); //maybe unnecessary but won't hurt
     WiFi.end(); //We cant stay connected to WiFi it drains 30mA in Low Power Mode and 100mA w/o LP
     g_lastRtcUpdateDay = rtc.getDay(); //set to actual day
+    /*delay(10);
+    digitalWrite(27, LOW); //Pull Reset of Nina WiFi Low to disable it and save even more Battery*/
     return true;
 }
 /*________________________________________________________________________________________________*/
@@ -340,7 +350,9 @@ void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue,
     digitalWrite(CCS_811_nWAKE, LOW); // Enable Logic Engine of co2Sensor
     delayMicroseconds(55);            // Time until active after nWAKE asserted = 50 us
     co2Sensor.setEnvironmentalData(humidityValue, temperatureValue);
-    while(!co2Sensor.available()){delay(10);} //due to clock drifing we loop until data is available 
+    uint8_t before = rtc.getSeconds();
+    while(!co2Sensor.available()){delay(10);} //due to clock drifing we loop until data is available
+    uint8_t after = rtc.getSeconds();
     if (!co2Sensor.readData())
     {
         eco2Value = co2Sensor.geteCO2();
@@ -348,6 +360,16 @@ void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue,
     }
     delayMicroseconds(25);             // Logic engine should run at least 20 us
     digitalWrite(CCS_811_nWAKE, HIGH); // Disable Logic Engine od co2_sensor to save power
+    /* If we idle very long because the CO2 Sensor internal clock and the alarm clock are out of
+     * sync, we set the alarm to the closest second, so we can maximize sleep
+     */
+    if (before != after){ //When we idle very long
+        //rtc.detachInterrupt();
+        //rtc.disableAlarm();
+        rtc.setAlarmSeconds(after);
+        //rtc.enableAlarm(rtc.MATCH_SS);
+        //rtc.attachInterrupt(alarmISRCallback);
+    }
 }
 /*________________________________________________________________________________________________*/
 /**

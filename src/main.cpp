@@ -163,7 +163,7 @@ void loop()
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case READ_BATTERY:
         batteryVoltage = analogRead(BATTERY_VOLTAGE_ADC_PIN) * ADC_VOLTAGE_FACTOR;
-        batteryPercentage = calcBatteryPercentage(batteryVoltage);
+        batteryPercentage = calcBatteryPercentageLiPo(batteryVoltage);
         e_state = PUBLISH_MQTT;
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
@@ -432,22 +432,14 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
  *
  * @param adcValue the integer Reading of the ADC across the voltage divider. The factor to convert
  * the value is calculated only once on setup.
- * @return float the battery percantage based on the formula y = 143*sqrt(x-3.71) for change above
- * 16% and abs(30*pow(abs(x-3.724),1/6)-25.8) for charge below 16% or 3.723 Volts
+ * @return float the battery percantage based on the formula y = 120x-404 for change above
+ * 63% and 255x-930 for charge below 63%.
  */
-float calcBatteryPercentage(float voltage)
+float calcBatteryPercentageLiPo(float x)
 {
-    if (voltage < 3.723)
-    {
-        float absRadiant = abs(voltage - 3.724f);
-        float sixthRoot = powf(absRadiant, 0.1666f);
-        float percentage = 30.0f * sixthRoot - 25.8f;
-        float absPercentage = abs(percentage);
-        return roundf(absPercentage);
-    }
+    if (x < 3.896)
+        return 255.0f*x - 930.0f;
     else
-    {
-        return 143 * sqrtf(voltage - 3.71f);
-    }
+        return 120.0f*x-404;
 }
 /*end of file*/

@@ -16,7 +16,7 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
                  float temperatureValue, float humidityValue, float voltage, float percentage);
 
 void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi, float voltage, float percentage);
-float calcBatteryPercentage(float voltage);
+float calcBatteryPercentageLiPo(float voltage);
 bool updateNetworkTime();
 void mqttReconnect();
 #endif

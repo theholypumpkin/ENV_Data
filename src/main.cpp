@@ -128,7 +128,6 @@ void loop()
         //Go to sleep until Alarm wakes you
         rtc.standbyMode();
         break;
-
     case READ_DHT_SENSOR:
         b_ENVDataCorrection = readDHTSensor(temperatureValue, humidityValue);
         /* Unnecessary because we don't break but improves readability
@@ -253,10 +252,9 @@ void mqttReconnect() {
         if (!mqttClient.connect(g_name, g_mqttUsername, g_mqttPassword)){
             Serial1.print("failed, rc=");
             Serial1.print(mqttClient.state());
-            Serial1.println(" try again in 1 seconds");
+            Serial1.println(" try again in 5 seconds");
             // Wait 1 seconds before retrying
             delay(1000);
-            //TODO gpio to reset pin after too many failures
         }
     }
 }
@@ -326,7 +324,6 @@ void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue)
 {
     digitalWrite(CCS_811_nWAKE, LOW); // Enable Logic Engine of co2Sensor
     delayMicroseconds(55);            // Time until active after nWAKE asserted = 50 us
-    while(!co2Sensor.available()){delay(10);} //due to clock drifing we loop until data is available
     if (!co2Sensor.readData())
     {
         eco2Value = co2Sensor.geteCO2();

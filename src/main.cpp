@@ -439,6 +439,8 @@ float calcBatteryPercentageLiPo(float x)
 {
     if (x < 3.896)
         return 255.0f*x - 930.0f;
+    else if (x < 3.648)
+        return 0.0;
     else
         return 120.0f*x-404;
 }

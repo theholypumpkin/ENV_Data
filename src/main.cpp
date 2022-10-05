@@ -42,7 +42,8 @@ volatile statemachine_t e_state = IDLE;
 /*================================================================================================*/
 uint8_t g_lastRtcUpdateDay;
 uint16_t g_uuid;
-const float MAX_BATTERY_VOLTAGE = 4.2,
+//We usaee two 9V block batteries to keep current low
+const float MAX_BATTERY_VOLTAGE = 18.0, //use a R1 = 10k und R2 = 2k Voltage Divider
             ADC_VOLTAGE_FACTOR = MAX_BATTERY_VOLTAGE / powf(2.0, ADC_RESOLUTION);
 
 volatile bool b_isrFlag = false; // a flag which is flipped inside an isr
@@ -81,6 +82,18 @@ void setup()
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     delayMicroseconds(25);             // Logic engine should run at least 20 us
     digitalWrite(CCS_811_nWAKE, HIGH); // Disable Logic Engine
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    //Begin the Wifi Connection
+    WiFi.setHostname(g_name);
+
+    //esablishing wifi connection
+    while(WiFi.begin(g_wifiSsid, g_wifiPass) != WL_CONNECTED){ //retry connect indef
+        delay(100);
+        //TODO Wire gpio to reset pin and triger it after some time
+    }
+    WiFi.lowPowerMode();
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    mqttClient.setKeepAlive(70); //Keep Connection alive for 70 seconds
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     rtc.begin(); //begin the rtc at "random time" probably  Jan 1 2000 at 00:00:00 o'clock
     g_lastRtcUpdateDay = rtc.getDay();
@@ -123,11 +136,11 @@ void loop()
     }
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     switch(e_state){
-        /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case IDLE:
         //Go to sleep until Alarm wakes you
         rtc.standbyMode();
         break;
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case READ_DHT_SENSOR:
         b_ENVDataCorrection = readDHTSensor(temperatureValue, humidityValue);
         /* Unnecessary because we don't break but improves readability
@@ -155,20 +168,6 @@ void loop()
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case PUBLISH_MQTT:
-        /*//Enable the NINA WiFi Modul by setting the internal pin high!
-        digitalWrite(27, HIGH);
-        delay(10);*/
-        //Configure static networking and set hostname for this paticular request  
-        WiFi.config(g_staticIPAddress, g_DNSAddress, g_gateway, g_subnet);
-        WiFi.setHostname(g_name);
-
-        //esablishing wifi connection
-        while(WiFi.begin(g_wifiSsid, g_wifiPass) != WL_CONNECTED){ //retry connect indef
-            delay(1000);
-            //TODO Wire gpio to reset pin and triger it after some time
-        }
-        
-        //reconnect To mqtt (returns imidiatly if already connected)
         mqttReconnect();
         long wifiSignalStrength = WiFi.RSSI();
         if (b_ENVDataCorrection)
@@ -183,10 +182,6 @@ void loop()
         }
         mqttClient.loop();
         e_state = IDLE;
-        WiFi.lowPowerMode(); //maybe unnecessary but won't hurt
-        WiFi.end(); //We cant stay connected to WiFi it drains 30mA in Low Power Mode and 100mA w/o LP
-        /*delay(10);
-        digitalWrite(27, LOW); //Pull Reset of Nina WiFi Low to disable it and save even more Battery*/
         break;
     }
 }
@@ -205,40 +200,20 @@ void alarmISRCallback()
  * Afterwards it disconnects from wifi to conserve battery.
  */
 bool updateNetworkTime(){
-    /*//Enable the NINA WiFi Modul by setting the internal pin high!
-    digitalWrite(27, HIGH);
-    delay(10);*/
-    //Configure static networking and set hostname for this paticular request
-    WiFi.config(g_staticIPAddress, g_DNSAddress, g_gateway, g_subnet);
-    WiFi.setHostname(g_name);
-
-    uint8_t connection_attempts = 0;
-    while(WiFi.begin(g_wifiSsid, g_wifiPass) != WL_CONNECTED){ //retry connect
-        connection_attempts++;
-        if(connection_attempts == 4){
-            return false; //return early
-        }
-        delay(1000);
-    }
     WiFiUDP ntpUdpObject;
     NTPClient ntpClient(ntpUdpObject, g_ntpTimeServerURL);
     ntpClient.begin();
-    connection_attempts = 0;
+    uint8_t connection_attempts = 0;
     while(!ntpClient.update()){ //attempt to connect to ntp server up to 5 times.
         connection_attempts++;
         if(connection_attempts == 4){
-            WiFi.end();
-            return false; //return early
+            return false;
         }
         delay(1000);
     }
     unsigned long epochTime = ntpClient.getEpochTime();
     rtc.setEpoch(epochTime);
-    WiFi.lowPowerMode(); //maybe unnecessary but won't hurt
-    WiFi.end(); //We cant stay connected to WiFi it drains 30mA in Low Power Mode and 100mA w/o LP
     g_lastRtcUpdateDay = rtc.getDay(); //set to actual day
-    /*delay(10);
-    digitalWrite(27, LOW); //Pull Reset of Nina WiFi Low to disable it and save even more Battery*/
     return true;
 }
 /*________________________________________________________________________________________________*/

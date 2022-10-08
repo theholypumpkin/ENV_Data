@@ -41,8 +41,8 @@ enum statemachine_t
 volatile statemachine_t e_state = IDLE;
 /*================================================================================================*/
 uint8_t g_lastRtcUpdateDay;
-uint16_t g_uuid;
-//We usaee two 9V block batteries to keep current low
+uint16_t g_uuid = 47950; //BUG REMOVE STATIC
+//We use two 9V block batteries to keep current low
 const float MAX_BATTERY_VOLTAGE = 18.0, //use a R1 = 10k und R2 = 2k Voltage Divider
             ADC_VOLTAGE_FACTOR = MAX_BATTERY_VOLTAGE / powf(2.0, ADC_RESOLUTION);
 
@@ -60,9 +60,10 @@ void setup()
     pinMode(CCS_811_nWAKE, OUTPUT);
     analogReadResolution(ADC_RESOLUTION);
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    setupEEPROM();
+    //setupEEPROM(); //BUG RE-ENABLE
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    Serial1.begin(115200);            // Use Hardware Serial (not USB Serial) to debug
+    Serial.begin(9600);            // Use Hardware Serial (not USB Serial) to debug
+    Serial.println("Setup");
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     digitalWrite(CCS_811_nWAKE, LOW); // Enable Logic engine of CCS811
     delayMicroseconds(55);            // Time until active after nWAKE asserted = 50 us
@@ -75,7 +76,7 @@ void setup()
             bool state = digitalRead(LED_BUILTIN);
             digitalWrite(LED_BUILTIN, !state);
             delay(500); // When falure blink LED rapidly
-            Serial1.println("CCS Error");
+            Serial.println("CCS Error");
         }
     }
     co2Sensor.setDriveMode(CCS811_DRIVE_MODE_60SEC);
@@ -84,27 +85,56 @@ void setup()
     digitalWrite(CCS_811_nWAKE, HIGH); // Disable Logic Engine
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     //Begin the Wifi Connection
+    Serial.println("Connecting...");
     WiFi.setHostname(g_name);
-
     //esablishing wifi connection
     while(WiFi.begin(g_wifiSsid, g_wifiPass) != WL_CONNECTED){ //retry connect indef
         delay(100);
         //TODO Wire gpio to reset pin and triger it after some time
     }
     WiFi.lowPowerMode();
+    Serial.println("WiFi Connected");
+    //Serial.print("IP Address: ");
+    //Serial.println(WiFi.localIP());
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     mqttClient.setKeepAlive(70); //Keep Connection alive for 70 seconds
+    mqttClient.setBufferSize(DOCUMENT_SIZE);
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     rtc.begin(); //begin the rtc at "random time" probably  Jan 1 2000 at 00:00:00 o'clock
     g_lastRtcUpdateDay = rtc.getDay();
     if(updateNetworkTime()){ //set real time acording to network
-        Serial1.println("Network Time successful");
+        Serial.println("Network Time successful");
+        /*Serial.print(rtc.getHours());
+        Serial.print(":");
+        Serial.print(rtc.getMinutes());
+        Serial.print(":");
+        Serial.print(rtc.getSeconds());
+        Serial.print(" ");
+        Serial.print(rtc.getDay());
+        Serial.print("/");
+        Serial.print(rtc.getMonth());
+        Serial.print("/");
+        Serial.println(rtc.getYear()); */ 
     }else{
-        Serial1.println("ERROR: No Network Time");
+        Serial.println("ERROR: No Network Time");
     }
-    rtc.setAlarmSeconds(0);
-    rtc.enableAlarm(rtc.MATCH_SS); //Set Alarm every full minute (when seconds are 0)
+    //rtc.setAlarmTime(rtc.getHours(), rtc.getMinutes(), rtc.getSeconds());
+    //rtc.setAlarmDate(rtc.getDay(), rtc.getMonth(), rtc.getYear());
+    rtc.setAlarmSeconds(rtc.getSeconds()+10);
+    rtc.enableAlarm(rtc.MATCH_SS); //Set Alarm every minute
     rtc.attachInterrupt(alarmISRCallback); //When alarm trigger this callback.
+    /*Serial.print("Alarm Time: ");
+    Serial.print(rtc.getAlarmHours());
+    Serial.print(":");
+    Serial.print(rtc.getAlarmMinutes());
+    Serial.print(":");
+    Serial.print(rtc.getAlarmSeconds());
+    Serial.print(" ");
+    Serial.print(rtc.getAlarmDay());
+    Serial.print("/");
+    Serial.print(rtc.getAlarmMonth());
+    Serial.print("/");
+    Serial.println(rtc.getAlarmYear());*/
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     delay(10000); // give us some time to upload a new program
 }
@@ -119,7 +149,7 @@ void loop()
 {
     // make static to retain variables even if out of scope.
     static uint16_t eco2Value, tvocValue;
-    static float temperatureValue, humidityValue, batteryPercentage, batteryVoltage;
+    static float temperatureValue, humidityValue, heatIndexValue, batteryPercentage, batteryVoltage;
     static bool b_ENVDataCorrection;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     if (b_isrFlag)
@@ -129,27 +159,33 @@ void loop()
     }
     if(g_lastRtcUpdateDay != rtc.getDay()){ //update network time daily
         if(updateNetworkTime()){ //set real time acording to network
-            Serial1.println("Network Time successful");
+            Serial.println("Network Time successful");
         }else{
-            Serial1.println("ERROR: No Network Time");
+            Serial.println("ERROR: No Network Time");
         }
     }
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     switch(e_state){
     case IDLE:
         //Go to sleep until Alarm wakes you
-        rtc.standbyMode();
+        //Serial.println("Going to sleep");
+        //rtc.standbyMode();
+        /*for (int i = 0; i < 5; i++){
+            bool state = digitalRead(LED_BUILTIN);
+            digitalWrite(LED_BUILTIN, !state);
+            delay(500);
+        }
+        digitalWrite(LED_BUILTIN, LOW);*/
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case READ_DHT_SENSOR:
-        b_ENVDataCorrection = readDHTSensor(temperatureValue, humidityValue);
-        /* Unnecessary because we don't break but improves readability
-         * optimizer will likly remove it anyway
-         */
+        //Serial.println("State: DHT");
+        b_ENVDataCorrection = readDHTSensor(temperatureValue, humidityValue, heatIndexValue);
         e_state = READ_CCS_SENSOR;
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case READ_CCS_SENSOR:
+        //Serial.println("State: CCS");
         if (b_ENVDataCorrection)
         {
             readCCSSensor(eco2Value, tvocValue, temperatureValue, humidityValue);
@@ -162,18 +198,20 @@ void loop()
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case READ_BATTERY:
+        //Serial.println("State: BATTERY");
         batteryVoltage = analogRead(BATTERY_VOLTAGE_ADC_PIN) * ADC_VOLTAGE_FACTOR;
         batteryPercentage = calcBatteryPercentageLiPo(batteryVoltage);
         e_state = PUBLISH_MQTT;
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case PUBLISH_MQTT:
+        //Serial.println("State: MQTT");
         mqttReconnect();
         long wifiSignalStrength = WiFi.RSSI();
         if (b_ENVDataCorrection)
         {
             publishMQTT(eco2Value, tvocValue, wifiSignalStrength, temperatureValue, 
-            humidityValue, batteryVoltage, batteryPercentage);
+            humidityValue, heatIndexValue, batteryVoltage, batteryPercentage);
         }
         else
         {
@@ -201,7 +239,7 @@ void alarmISRCallback()
  */
 bool updateNetworkTime(){
     WiFiUDP ntpUdpObject;
-    NTPClient ntpClient(ntpUdpObject, g_ntpTimeServerURL);
+    NTPClient ntpClient(ntpUdpObject, g_ntpTimeServerURL, 7200);
     ntpClient.begin();
     uint8_t connection_attempts = 0;
     while(!ntpClient.update()){ //attempt to connect to ntp server up to 5 times.
@@ -225,9 +263,9 @@ void mqttReconnect() {
   // Loop until we're reconnected
     while (!mqttClient.connected()) {
         if (!mqttClient.connect(g_name, g_mqttUsername, g_mqttPassword)){
-            Serial1.print("failed, rc=");
-            Serial1.print(mqttClient.state());
-            Serial1.println(" try again in 5 seconds");
+            Serial.print("failed, rc=");
+            Serial.print(mqttClient.state());
+            Serial.println(" try again in 1 seconds");
             // Wait 1 seconds before retrying
             delay(1000);
         }
@@ -299,6 +337,13 @@ void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue)
 {
     digitalWrite(CCS_811_nWAKE, LOW); // Enable Logic Engine of co2Sensor
     delayMicroseconds(55);            // Time until active after nWAKE asserted = 50 us
+    /*uint8_t before = rtc.getSeconds();
+    while(!co2Sensor.available()){
+        delay(1000);
+        Serial.println("Waiting fro CCS Data");
+        } //due to clock drifing we loop until data is available
+    uint8_t after = rtc.getSeconds();
+    Serial.println("Data available");*/
     if (!co2Sensor.readData())
     {
         eco2Value = co2Sensor.geteCO2();
@@ -322,9 +367,13 @@ void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue,
     digitalWrite(CCS_811_nWAKE, LOW); // Enable Logic Engine of co2Sensor
     delayMicroseconds(55);            // Time until active after nWAKE asserted = 50 us
     co2Sensor.setEnvironmentalData(humidityValue, temperatureValue);
-    uint8_t before = rtc.getSeconds();
-    while(!co2Sensor.available()){delay(10);} //due to clock drifing we loop until data is available
+    /*uint8_t before = rtc.getSeconds();
+    while(!co2Sensor.available()){
+        delay(1000);
+        Serial.println("Waiting fro CCS Data");
+        } //due to clock drifing we loop until data is available
     uint8_t after = rtc.getSeconds();
+    Serial.println("Data available");*/
     if (!co2Sensor.readData())
     {
         eco2Value = co2Sensor.geteCO2();
@@ -335,13 +384,13 @@ void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue,
     /* If we idle very long because the CO2 Sensor internal clock and the alarm clock are out of
      * sync, we set the alarm to the closest second, so we can maximize sleep
      */
-    if (before != after){ //When we idle very long
+    //if (before != after){ //When we idle very long
         //rtc.detachInterrupt();
         //rtc.disableAlarm();
-        rtc.setAlarmSeconds(after);
+    //    rtc.setAlarmSeconds(after);
         //rtc.enableAlarm(rtc.MATCH_SS);
         //rtc.attachInterrupt(alarmISRCallback);
-    }
+    //}
 }
 /*________________________________________________________________________________________________*/
 /**
@@ -349,10 +398,11 @@ void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue,
  *
  * @param temperatureValue A Reference where the temperature Value should be saved at
  * @param humidityValue A Reference where the humidity Value should be saved at
+ * @param heatIndexValue A Reference where the heat index Value should be saved at
  * @return true if the Reading was sucessful
  * @return false if the reading was unsucessful and the read value is "Not A Number"
  */
-bool readDHTSensor(float &temperatureValue, float &humidityValue)
+bool readDHTSensor(float &temperatureValue, float &humidityValue, float &heatIndexValue)
 {
     temperatureValue = tempHmdSensor.readTemperature();
     humidityValue = tempHmdSensor.readHumidity();
@@ -360,6 +410,7 @@ bool readDHTSensor(float &temperatureValue, float &humidityValue)
     {
         return false;
     }
+    heatIndexValue = tempHmdSensor.computeHeatIndex(temperatureValue, humidityValue, false);
     return true;
 }
 /*________________________________________________________________________________________________*/
@@ -370,14 +421,14 @@ bool readDHTSensor(float &temperatureValue, float &humidityValue)
  * @param eco2Value The read CO2 Value
  * @param tvocValue The read TVOC Value
  * @param rssi The WiFi Signal Strength
- * @param dustDensityValue The read Dust Density Value
- * @param dustSensorBaseline The dust Sensor baseline when available
+ * @param voltage the battery voltage
+ * @param percantage the calculated battery percentage
  */
 void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi, 
 float voltage, float percentage)
 {
 
-    StaticJsonDocument<200> json; // create a json object //NOTE size of document check
+    StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object //NOTE size of document check
     json["tags"]["location"].set(g_location);
     json["tags"]["uuid"].set(g_uuid);
     json["tags"]["name"].set(g_name);
@@ -387,10 +438,12 @@ float voltage, float percentage)
     json["fields"]["Battery Percentage"].set(percentage);
     json["fields"]["WiFi RSSI"].set(rssi);
     // using a buffer speeds up the mqtt publishing process by over 100x
-    char mqttJsonBuffer[100];
+    char mqttJsonBuffer[DOCUMENT_SIZE];
     size_t n = serializeJson(json, mqttJsonBuffer); // saves a bit of time when publishing
-    mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
-    Serial1.println(mqttJsonBuffer);
+    bool success  = mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
+    Serial.print("Publish successful? ");
+    Serial.println(success ? "Yes" : "No");
+    Serial.println(mqttJsonBuffer);
 }
 /*________________________________________________________________________________________________*/
 /**
@@ -400,12 +453,15 @@ float voltage, float percentage)
  * @param eco2Value The read CO2 Value
  * @param tvocValue The read TVOC Value
  * @param rssi The WiFi Signal Strength
- * @param dustDensityValue The read Dust Density Value
  * @param temperatureValue The read Temperature Value
- * @param humidityValue The Read Humidity Value
+ * @param humidityValue The read Humidity Value
+ * @param heatIndexValue The calculated heat index value
+ * @param voltage the battery voltage
+ * @param percantage the calculated battery percentage
  */
 void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
-                 float temperatureValue, float humidityValue, float voltage, float percentage)
+                 float temperatureValue, float humidityValue, float heatIndexValue, 
+                 float voltage, float percentage)
 {
     StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object //NOTE size of document check
     // json["measurement"].set(g_influxDbMeasurement);
@@ -416,14 +472,23 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
     json["fields"]["TVOC"].set(tvocValue);
     json["fields"]["temperature"].set(temperatureValue);
     json["fields"]["humidity"].set(humidityValue);
+    json["fields"]["heat index"].set(heatIndexValue);
     json["fields"]["Battery Voltage"].set(voltage);
     json["fields"]["Battery Percentage"].set(percentage);
     json["fields"]["WiFi RSSI"].set(rssi);
     // using a buffer speeds up the mqtt publishing process by over 100x
     char mqttJsonBuffer[DOCUMENT_SIZE];
     size_t n = serializeJson(json, mqttJsonBuffer);
-    mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
-    Serial1.println(mqttJsonBuffer);
+    bool success  = mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
+    Serial.print("Publish successful? ");
+    Serial.println(success ? "Yes" : "No");
+    Serial.print("Reason: ");
+    char *arr[10] = {"MQTT_CONNECTION_TIMEOUT", "MQTT_CONNECTION_LOST", "MQTT_CONNECT_FAILED", 
+                    "MQTT_DISCONNECTED", "MQTT_CONNECTED", "MQTT_CONNECT_BAD_PROTOCOL", 
+                    "MQTT_CONNECT_BAD_CLIENT_ID", "MQTT_CONNECT_UNAVAILABLE", 
+                    "MQTT_CONNECT_BAD_CREDENTIALS", "MQTT_CONNECT_UNAUTHORIZED"};
+    Serial.println(arr[mqttClient.state()+4]);
+    Serial.println(mqttJsonBuffer);
 }
 /*________________________________________________________________________________________________*/
 /**
@@ -444,4 +509,5 @@ float calcBatteryPercentageLiPo(float x)
     else
         return 120.0f*x-404;
 }
+//TODO meassure (9V block lithum battery discharge rate and generate formula)
 /*end of file*/

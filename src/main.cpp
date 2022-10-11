@@ -5,6 +5,7 @@
 #include "secrets.hpp"
 #include <SPI.h>
 #include <ArduinoBLE.h>
+#include "ble_definitions.h"
 #include <DHT.h>
 #include <DHT_U.h>
 #include <Adafruit_CCS811.h>
@@ -47,6 +48,31 @@ volatile bool b_isrFlag = false; // a flag which is flipped inside an isr
 RTCZero rtc;
 DHT tempHmdSensor(DHTPIN, DHTTYPE); // Create the DHT object
 Adafruit_CCS811 co2Sensor;
+/*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+BLEService enviormentalSensingStationService(SERVICE_GENERIC_ACCESS_UUID);
+/*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+BLEUnsignedCharCharacteristic sensorLocationCharacteristic(
+    CHARACTERISTIC_SENSOR_LOCATION_UUID, 
+    BLERead);
+BLEShortCharacteristic deviceUUIDCharacteristic(
+    CHARACTERISTIC_OBJECT_ID_UUID, 
+    BLERead);
+BLEUnsignedShortCharacteristic batteryLevelCharacteristic(
+    CHARACTERISTIC_BATTERY_LEVEL_UUID, 
+    BLERead);
+/*BLEUnsignedShortCharacteristic eCo2Characteristic("123", BLERead); //TODO Custom UUID
+BLEUnsignedShortCharacteristic tvocCharacteristic("123", BLERead); //TODO Custom UUID
+BLEFloatCharacteristic temperatureCharacteristic(
+    CHARACTERISTIC_TEMPERATURE_CELSIUS_UUID, 
+    BLERead);
+BLEFloatCharacteristic humidityCharacteristic(
+    CHARACTERISTIC_HUMIDITY_UUID, 
+    BLERead | BLENotify); //the last one notifies too.*/
+/* Write all values to the same characteristic instead of induvidual once. Speeds up the process
+ * and cloud save some battery.
+ */
+BLEUnsignedCharCharacteristic enviormentalCharacteristic("123", BLERead | BLENotify); //TODO Custom UUID
+
 /*================================================================================================*/
 void setup()
 {
@@ -81,6 +107,26 @@ void setup()
     rtc.setAlarmSeconds(rtc.getSeconds()-1);
     rtc.enableAlarm(rtc.MATCH_SS); //Set Alarm every minute
     rtc.attachInterrupt(alarmISRCallback); //When alarm trigger this callback.
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    if (BLE.begin())
+    {
+        while (1)
+        {
+            bool state = digitalRead(LED_BUILTIN);
+            digitalWrite(LED_BUILTIN, !state);
+            delay(1000); // When falure blink LED rapidly
+            Serial1.println("BLEE Error");
+        }
+    }
+    BLE.setLocalName(g_name);
+    BLE.setAdvertisedService(enviormentalSensingStationService);
+    enviormentalSensingStationService.addCharacteristic(sensorLocationCharacteristic);
+    enviormentalSensingStationService.addCharacteristic(deviceUUIDCharacteristic);
+    enviormentalSensingStationService.addCharacteristic(batteryLevelCharacteristic);
+    enviormentalSensingStationService.addCharacteristic(enviormentalCharacteristic);
+
+    BLE.advertise();
+    Serial1.println("Bluetooth® device active, waiting for connections...");
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     delay(10000); // give us some time to upload a new program
 }
@@ -134,15 +180,15 @@ void loop()
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case PUBLISH_MQTT:
-        long bleSignalStrength = BLE.rssi();
+        //long bleSignalStrength = BLE.rssi(); //NOTE not needed is measured on the server instead
         if (b_ENVDataCorrection)
         {
-            publishMQTT(eco2Value, tvocValue, bleSignalStrength, temperatureValue, 
+            publishMQTT(eco2Value, tvocValue, temperatureValue, 
             humidityValue, batteryVoltage, batteryPercentage);
         }
         else
         {
-            publishMQTT(eco2Value, tvocValue, bleSignalStrength, batteryVoltage, 
+            publishMQTT(eco2Value, tvocValue, batteryVoltage, 
             batteryPercentage);
         }
         e_state = IDLE;

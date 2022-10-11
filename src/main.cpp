@@ -4,17 +4,13 @@
 #include "main.hpp"
 #include "secrets.hpp"
 #include <SPI.h>
-#include <WiFiNINA.h>
-#include <WiFiUdp.h>
-#include <NTPClient.h>
+#include <ArduinoBLE.h>
 #include <DHT.h>
 #include <DHT_U.h>
 #include <Adafruit_CCS811.h>
-#include <ArduinoJson.h>
 #include <JC_Button.h>
-#include <PubSubClient.h>
 #include <math.h>
-#include <RTCZero.h> //Also inplements sleep
+#include <RTCZero.h>
 /* SAMD21. SAMD51 chips do not have EEPROM. This library provides an EEPROM-like API and hence
  * allows the same code to be used.
  */
@@ -41,7 +37,7 @@ enum statemachine_t
 volatile statemachine_t e_state = IDLE;
 /*================================================================================================*/
 uint8_t g_lastRtcUpdateDay;
-uint16_t g_uuid = 47950;
+uint16_t g_uuid;
 //We use two 9V block batteries to keep current low
 const float MAX_BATTERY_VOLTAGE = 21.0, //use a R1 = 10M und R2 = 1.8M Voltage Divider
             ADC_VOLTAGE_FACTOR = MAX_BATTERY_VOLTAGE / powf(2.0, ADC_RESOLUTION);
@@ -51,8 +47,6 @@ volatile bool b_isrFlag = false; // a flag which is flipped inside an isr
 RTCZero rtc;
 DHT tempHmdSensor(DHTPIN, DHTTYPE); // Create the DHT object
 Adafruit_CCS811 co2Sensor;
-WiFiClient wifiClient;
-PubSubClient mqttClient(g_mqttServerUrl, g_mqttServerPort, wifiClient);
 /*================================================================================================*/
 void setup()
 {
@@ -83,30 +77,7 @@ void setup()
     delayMicroseconds(25);             // Logic engine should run at least 20 us
     digitalWrite(CCS_811_nWAKE, HIGH); // Disable Logic Engine
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    //Begin the Wifi Connection
-    Serial1.print("Connecting...");
-    WiFi.setHostname(g_name);
-    //esablishing wifi connection
-    while(WiFi.begin(g_wifiSsid, g_wifiPass) != WL_CONNECTED){ //retry connect indef
-        delay(100);
-        Serial1.print(".");
-        //TODO Wire gpio to reset pin and triger it after some time
-    }
-    WiFi.lowPowerMode();
-    Serial1.println("connected");
-    Serial1.print("IP Address: ");
-    Serial1.println(WiFi.localIP());
-    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    mqttClient.setKeepAlive(70); //Keep Connection alive for 70 seconds
-    mqttClient.setBufferSize(DOCUMENT_SIZE);
-    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    rtc.begin(); //begin the rtc at "random time" probably  Jan 1 2000 at 00:00:00 o'clock
-    g_lastRtcUpdateDay = rtc.getDay();
-    if(updateNetworkTime()){ //set real time acording to network
-        Serial1.println("Network Time successful");
-    }else{
-        Serial1.println("ERROR: No Network Time");
-    }
+    rtc.begin(); //begin the rtc at Jan 1 2000 at 00:00:00 o'clock, true time doesn't matter
     rtc.setAlarmSeconds(rtc.getSeconds()-1);
     rtc.enableAlarm(rtc.MATCH_SS); //Set Alarm every minute
     rtc.attachInterrupt(alarmISRCallback); //When alarm trigger this callback.
@@ -124,20 +95,13 @@ void loop()
 {
     // make static to retain variables even if out of scope.
     static uint16_t eco2Value, tvocValue;
-    static float temperatureValue, humidityValue, heatIndexValue, batteryPercentage, batteryVoltage;
+    static float temperatureValue, humidityValue, batteryPercentage, batteryVoltage;
     static bool b_ENVDataCorrection;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     if (b_isrFlag)
     {
         e_state = READ_DHT_SENSOR; // This is safer than setting the value inside the ISR itself
         b_isrFlag = false;
-    }
-    if(g_lastRtcUpdateDay != rtc.getDay()){ //update network time daily
-        if(updateNetworkTime()){ //set real time acording to network
-            Serial1.println("Updated Network Time");
-        }else{
-            Serial1.println("Network Time Update failed");
-        }
     }
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     switch(e_state){
@@ -147,7 +111,7 @@ void loop()
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case READ_DHT_SENSOR:
-        b_ENVDataCorrection = readDHTSensor(temperatureValue, humidityValue, heatIndexValue);
+        b_ENVDataCorrection = readDHTSensor(temperatureValue, humidityValue);
         e_state = READ_CCS_SENSOR;
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
@@ -170,19 +134,17 @@ void loop()
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case PUBLISH_MQTT:
-        mqttReconnect();
-        long wifiSignalStrength = WiFi.RSSI();
+        long bleSignalStrength = BLE.rssi();
         if (b_ENVDataCorrection)
         {
-            publishMQTT(eco2Value, tvocValue, wifiSignalStrength, temperatureValue, 
-            humidityValue, heatIndexValue, batteryVoltage, batteryPercentage);
+            publishMQTT(eco2Value, tvocValue, bleSignalStrength, temperatureValue, 
+            humidityValue, batteryVoltage, batteryPercentage);
         }
         else
         {
-            publishMQTT(eco2Value, tvocValue, wifiSignalStrength, batteryVoltage, 
+            publishMQTT(eco2Value, tvocValue, bleSignalStrength, batteryVoltage, 
             batteryPercentage);
         }
-        mqttClient.loop();
         e_state = IDLE;
         break;
     }
@@ -194,46 +156,6 @@ void loop()
 void alarmISRCallback()
 {
     b_isrFlag = true;
-}
-/*________________________________________________________________________________________________*/
-/**
- * @brief Connects to WiFi using a static IP-Address, DNS, Gateway and Subnet than
- * it fetchs the latest network time and set the Real Time Clock to this time.
- * Afterwards it disconnects from wifi to conserve battery.
- */
-bool updateNetworkTime(){
-    WiFiUDP ntpUdpObject;
-    NTPClient ntpClient(ntpUdpObject, g_ntpTimeServerURL, 7200);
-    ntpClient.begin();
-    uint8_t connection_attempts = 0;
-    while(!ntpClient.update()){ //attempt to connect to ntp server up to 5 times.
-        connection_attempts++;
-        if(connection_attempts == 4){
-            return false;
-        }
-        delay(1000);
-    }
-    unsigned long epochTime = ntpClient.getEpochTime();
-    rtc.setEpoch(epochTime);
-    g_lastRtcUpdateDay = rtc.getDay(); //set to actual day
-    return true;
-}
-/*________________________________________________________________________________________________*/
-/**
- * @brief Attempt to reconnect to mqtt Server
- * 
- */
-void mqttReconnect() {
-  // Loop until we're reconnected
-    while (!mqttClient.connected()) {
-        if (!mqttClient.connect(g_name, g_mqttUsername, g_mqttPassword)){
-            Serial1.print("failed, rc=");
-            Serial1.print(mqttClient.state());
-            Serial1.println(" try again in 1 seconds");
-            // Wait 1 seconds before retrying
-            delay(1000);
-        }
-    }
 }
 /*________________________________________________________________________________________________*/
 /**
@@ -338,11 +260,10 @@ void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue,
  *
  * @param temperatureValue A Reference where the temperature Value should be saved at
  * @param humidityValue A Reference where the humidity Value should be saved at
- * @param heatIndexValue A Reference where the heat index Value should be saved at
- * @return true if the Reading was sucessful
+ * @return true if the reading was sucessful
  * @return false if the reading was unsucessful and the read value is "Not A Number"
  */
-bool readDHTSensor(float &temperatureValue, float &humidityValue, float &heatIndexValue)
+bool readDHTSensor(float &temperatureValue, float &humidityValue)
 {
     temperatureValue = tempHmdSensor.readTemperature();
     humidityValue = tempHmdSensor.readHumidity();
@@ -350,7 +271,6 @@ bool readDHTSensor(float &temperatureValue, float &humidityValue, float &heatInd
     {
         return false;
     }
-    heatIndexValue = tempHmdSensor.computeHeatIndex(temperatureValue, humidityValue, false);
     return true;
 }
 /*________________________________________________________________________________________________*/
@@ -368,7 +288,7 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
 float voltage, float percentage)
 {
 
-    StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
+    /*StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
     json["tags"]["location"].set(g_location);
     json["tags"]["uuid"].set(g_uuid);
     json["tags"]["name"].set(g_name);
@@ -383,6 +303,7 @@ float voltage, float percentage)
     bool success  = mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
     Serial1.println(success ? "Published readings to MQTT" : "Failed to Publish reading to MQTT");
     Serial1.println(mqttJsonBuffer);
+    */
 }
 /*________________________________________________________________________________________________*/
 /**
@@ -394,15 +315,14 @@ float voltage, float percentage)
  * @param rssi The WiFi Signal Strength
  * @param temperatureValue The read Temperature Value
  * @param humidityValue The read Humidity Value
- * @param heatIndexValue The calculated heat index value
  * @param voltage the battery voltage
  * @param percentage the calculated battery percentage
  */
 void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
-                 float temperatureValue, float humidityValue, float heatIndexValue, 
+                 float temperatureValue, float humidityValue, 
                  float voltage, float percentage)
 {
-    StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
+    /*StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
     // json["measurement"].set(g_influxDbMeasurement);
     json["tags"]["location"].set(g_location);
     json["tags"]["uuid"].set(g_uuid);
@@ -420,7 +340,7 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
     size_t n = serializeJson(json, mqttJsonBuffer);
     bool success  = mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
     Serial1.println(success ? "Published readings to MQTT" : "Failed to Publish reading to MQTT");
-    Serial1.println(mqttJsonBuffer);
+    Serial1.println(mqttJsonBuffer);*/
 }
 /*________________________________________________________________________________________________*/
 /**

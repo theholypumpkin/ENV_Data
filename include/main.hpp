@@ -11,13 +11,11 @@ void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue);
 void readCCSSensor(uint16_t &eco2Value, uint16_t &tvocValue,
                    float temperatureValue, float humidityValue);
 
-bool readDHTSensor(float &temperatureValue, float &humidityValue, float &heatIndexValue);
+bool readDHTSensor(float &temperatureValue, float &humidityValue);
 void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
-                 float temperatureValue, float humidityValue, float heatIndexValue, 
+                 float temperatureValue, float humidityValue, 
                  float voltage, float percentage);
 
 void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi, float voltage, float percentage);
 float calcBatteryPercentageLiPo(float voltage);
-bool updateNetworkTime();
-void mqttReconnect();
 #endif

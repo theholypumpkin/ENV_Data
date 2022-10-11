@@ -41,7 +41,7 @@ enum statemachine_t
 volatile statemachine_t e_state = IDLE;
 /*================================================================================================*/
 uint8_t g_lastRtcUpdateDay;
-uint16_t g_uuid = 47950;
+uint16_t g_uuid;
 //We use two 9V block batteries to keep current low
 const float MAX_BATTERY_VOLTAGE = 21.0, //use a R1 = 10M und R2 = 1.8M Voltage Divider
             ADC_VOLTAGE_FACTOR = MAX_BATTERY_VOLTAGE / powf(2.0, ADC_RESOLUTION);

@@ -6,6 +6,7 @@
 #include <SPI.h>
 #include <ArduinoBLE.h>
 #include "ble_definitions.h"
+#include <ArduinoJson.h>
 #include <DHT.h>
 #include <DHT_U.h>
 #include <Adafruit_CCS811.h>
@@ -40,7 +41,7 @@ volatile statemachine_t e_state = IDLE;
 uint8_t g_lastRtcUpdateDay;
 uint16_t g_uuid;
 //We use two 9V block batteries to keep current low
-const float MAX_BATTERY_VOLTAGE = 21.0, //use a R1 = 10M und R2 = 1.8M Voltage Divider
+const float MAX_BATTERY_VOLTAGE = 4.2, //use a R1 = 100k und R2 = 330k Voltage Divider
             ADC_VOLTAGE_FACTOR = MAX_BATTERY_VOLTAGE / powf(2.0, ADC_RESOLUTION);
 
 volatile bool b_isrFlag = false; // a flag which is flipped inside an isr
@@ -49,29 +50,11 @@ RTCZero rtc;
 DHT tempHmdSensor(DHTPIN, DHTTYPE); // Create the DHT object
 Adafruit_CCS811 co2Sensor;
 /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-BLEService enviormentalSensingStationService(SERVICE_GENERIC_ACCESS_UUID);
+BLEService enviormentalSensingStationService(SERVICE_ENVIRONMENTAL_SENSING_UUID);
 /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-BLEUnsignedCharCharacteristic sensorLocationCharacteristic(
-    CHARACTERISTIC_SENSOR_LOCATION_UUID, 
-    BLERead);
-BLEShortCharacteristic deviceUUIDCharacteristic(
-    CHARACTERISTIC_OBJECT_ID_UUID, 
-    BLERead);
-BLEUnsignedShortCharacteristic batteryLevelCharacteristic(
-    CHARACTERISTIC_BATTERY_LEVEL_UUID, 
-    BLERead);
-/*BLEUnsignedShortCharacteristic eCo2Characteristic("123", BLERead); //TODO Custom UUID
-BLEUnsignedShortCharacteristic tvocCharacteristic("123", BLERead); //TODO Custom UUID
-BLEFloatCharacteristic temperatureCharacteristic(
-    CHARACTERISTIC_TEMPERATURE_CELSIUS_UUID, 
-    BLERead);
-BLEFloatCharacteristic humidityCharacteristic(
-    CHARACTERISTIC_HUMIDITY_UUID, 
-    BLERead | BLENotify); //the last one notifies too.*/
-/* Write all values to the same characteristic instead of induvidual once. Speeds up the process
- * and cloud save some battery.
- */
-BLEUnsignedCharCharacteristic enviormentalCharacteristic("123", BLERead | BLENotify); //TODO Custom UUID
+BLEUnsignedCharCharacteristic enviormentalCharacteristic(
+    CHARACTERISTIC_ENVIORMENTAL_SENSOR_DATA_UUID, 
+    BLERead | BLENotify);
 
 /*================================================================================================*/
 void setup()
@@ -103,6 +86,7 @@ void setup()
     delayMicroseconds(25);             // Logic engine should run at least 20 us
     digitalWrite(CCS_811_nWAKE, HIGH); // Disable Logic Engine
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    //TODO Set RTC based on BLE
     rtc.begin(); //begin the rtc at Jan 1 2000 at 00:00:00 o'clock, true time doesn't matter
     rtc.setAlarmSeconds(rtc.getSeconds()-1);
     rtc.enableAlarm(rtc.MATCH_SS); //Set Alarm every minute
@@ -120,9 +104,6 @@ void setup()
     }
     BLE.setLocalName(g_name);
     BLE.setAdvertisedService(enviormentalSensingStationService);
-    enviormentalSensingStationService.addCharacteristic(sensorLocationCharacteristic);
-    enviormentalSensingStationService.addCharacteristic(deviceUUIDCharacteristic);
-    enviormentalSensingStationService.addCharacteristic(batteryLevelCharacteristic);
     enviormentalSensingStationService.addCharacteristic(enviormentalCharacteristic);
 
     BLE.advertise();
@@ -139,11 +120,14 @@ void setup()
  */
 void loop()
 {
+    BLEDevice central = BLE.central();
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     // make static to retain variables even if out of scope.
     static uint16_t eco2Value, tvocValue;
-    static float temperatureValue, humidityValue, batteryPercentage, batteryVoltage;
+    static float temperatureValue, humidityValue, batteryVoltage;
     static bool b_ENVDataCorrection;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    
     if (b_isrFlag)
     {
         e_state = READ_DHT_SENSOR; // This is safer than setting the value inside the ISR itself
@@ -157,39 +141,53 @@ void loop()
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case READ_DHT_SENSOR:
-        b_ENVDataCorrection = readDHTSensor(temperatureValue, humidityValue);
-        e_state = READ_CCS_SENSOR;
+        //only read the sensors, when we have an established connection, else just go back sleeping.
+        if(central.connected())
+        {
+            b_ENVDataCorrection = readDHTSensor(temperatureValue, humidityValue);
+            e_state = READ_CCS_SENSOR;
+        }
+        else
+            e_state = IDLE;
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case READ_CCS_SENSOR:
-        if (b_ENVDataCorrection)
+        //only read the sensors, when we have an established connection, else just go back sleeping.
+        if (b_ENVDataCorrection && central.connected())
         {
             readCCSSensor(eco2Value, tvocValue, temperatureValue, humidityValue);
+            e_state = READ_BATTERY;
         }
-        else
+        else if(!b_ENVDataCorrection && central.connected())
         {
             readCCSSensor(eco2Value, tvocValue);
+            e_state = READ_BATTERY;
         }
-        e_state = READ_BATTERY;
+        else
+            e_state = IDLE;
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case READ_BATTERY:
-        batteryVoltage = analogRead(BATTERY_VOLTAGE_ADC_PIN) * ADC_VOLTAGE_FACTOR;
-        batteryPercentage = calcBatteryPercentageLiPo(batteryVoltage);
-        e_state = PUBLISH_MQTT;
+        if(central.connected())
+        {
+            batteryVoltage = analogRead(BATTERY_VOLTAGE_ADC_PIN) * ADC_VOLTAGE_FACTOR;
+            //NOTE percentage will be calculated on server.
+            //batteryPercentage = calcBatteryPercentageLiPo(batteryVoltage); 
+            e_state = PUBLISH_MQTT;
+        }
+        else
+            e_state = IDLE;
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case PUBLISH_MQTT:
         //long bleSignalStrength = BLE.rssi(); //NOTE not needed is measured on the server instead
-        if (b_ENVDataCorrection)
+        if (b_ENVDataCorrection && central.connected())
         {
-            publishMQTT(eco2Value, tvocValue, temperatureValue, 
-            humidityValue, batteryVoltage, batteryPercentage);
+            publishMQTT(eco2Value, tvocValue, temperatureValue, humidityValue, batteryVoltage);
         }
-        else
+        else if(!b_ENVDataCorrection && central.connected())
         {
-            publishMQTT(eco2Value, tvocValue, batteryVoltage, 
-            batteryPercentage);
+            publishMQTT(eco2Value, tvocValue, batteryVoltage);
         }
         e_state = IDLE;
         break;
@@ -326,30 +324,27 @@ bool readDHTSensor(float &temperatureValue, float &humidityValue)
  *
  * @param eco2Value The read CO2 Value
  * @param tvocValue The read TVOC Value
- * @param rssi The WiFi Signal Strength
  * @param voltage the battery voltage
- * @param percentage the calculated battery percentage
  */
-void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi, 
-float voltage, float percentage)
+void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, 
+float voltage)
 {
 
-    /*StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
+    StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
+    json["measurement"].set(g_influxDbMeasurement);
     json["tags"]["location"].set(g_location);
     json["tags"]["uuid"].set(g_uuid);
     json["tags"]["name"].set(g_name);
     json["fields"]["eCO2"].set(eco2Value);
     json["fields"]["TVOC"].set(tvocValue);
     json["fields"]["Battery Voltage"].set(voltage);
-    json["fields"]["Battery Percentage"].set(percentage);
-    json["fields"]["WiFi RSSI"].set(rssi);
-    // using a buffer speeds up the mqtt publishing process by over 100x
-    char mqttJsonBuffer[DOCUMENT_SIZE];
-    size_t n = serializeJson(json, mqttJsonBuffer); // saves a bit of time when publishing
-    bool success  = mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
+    uint8_t bleJsonBuffer[DOCUMENT_SIZE];
+    size_t n = serializeJson(json, bleJsonBuffer);
+    //Write the JSON to BLE
+    int success  = enviormentalCharacteristic.writeValue(bleJsonBuffer, n); 
     Serial1.println(success ? "Published readings to MQTT" : "Failed to Publish reading to MQTT");
-    Serial1.println(mqttJsonBuffer);
-    */
+    //Serial1.println(bleJsonBuffer);
+    
 }
 /*________________________________________________________________________________________________*/
 /**
@@ -358,18 +353,16 @@ float voltage, float percentage)
  *
  * @param eco2Value The read CO2 Value
  * @param tvocValue The read TVOC Value
- * @param rssi The WiFi Signal Strength
  * @param temperatureValue The read Temperature Value
  * @param humidityValue The read Humidity Value
  * @param voltage the battery voltage
- * @param percentage the calculated battery percentage
  */
-void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
+void publishMQTT(uint16_t eco2Value, uint16_t tvocValue,
                  float temperatureValue, float humidityValue, 
-                 float voltage, float percentage)
+                 float voltage)
 {
-    /*StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
-    // json["measurement"].set(g_influxDbMeasurement);
+    StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
+    json["measurement"].set(g_influxDbMeasurement);
     json["tags"]["location"].set(g_location);
     json["tags"]["uuid"].set(g_uuid);
     json["tags"]["name"].set(g_name);
@@ -377,35 +370,12 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
     json["fields"]["TVOC"].set(tvocValue);
     json["fields"]["temperature"].set(temperatureValue);
     json["fields"]["humidity"].set(humidityValue);
-    json["fields"]["heat index"].set(heatIndexValue);
     json["fields"]["Battery Voltage"].set(voltage);
-    json["fields"]["Battery Percentage"].set(percentage);
-    json["fields"]["WiFi RSSI"].set(rssi);
-    // using a buffer speeds up the mqtt publishing process by over 100x
-    char mqttJsonBuffer[DOCUMENT_SIZE];
-    size_t n = serializeJson(json, mqttJsonBuffer);
-    bool success  = mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
+    uint8_t bleJsonBuffer[DOCUMENT_SIZE];
+    size_t n = serializeJson(json, bleJsonBuffer);
+    //Write the JSON to BLE
+    int success  = enviormentalCharacteristic.writeValue(bleJsonBuffer, n); 
     Serial1.println(success ? "Published readings to MQTT" : "Failed to Publish reading to MQTT");
-    Serial1.println(mqttJsonBuffer);*/
+    //Serial1.println(bleJsonBuffer);
 }
-/*________________________________________________________________________________________________*/
-/**
- * @brief Calculate the battery percentage acording to two differnet formulas depending on the
- * voltage read by the ADC.
- *
- * @param adcValue the integer Reading of the ADC across the voltage divider. The factor to convert
- * the value is calculated only once on setup.
- * @return float the battery percantage based on the formula y = 120x-404 for change above
- * 63% and 255x-930 for charge below 63%.
- */
-float calcBatteryPercentageLiPo(float x)
-{
-    if (x < 3.896)
-        return 255.0f*x - 930.0f;
-    else if (x < 3.648)
-        return 0.0;
-    else
-        return 120.0f*x-404;
-}
-//TODO meassure (9V block lithum battery discharge rate and generate formula with Linear Modelling using R)
 /*end of file*/

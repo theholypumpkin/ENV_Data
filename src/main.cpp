@@ -83,23 +83,6 @@ void setup()
     delayMicroseconds(25);             // Logic engine should run at least 20 us
     digitalWrite(CCS_811_nWAKE, HIGH); // Disable Logic Engine
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    //Begin the Wifi Connection
-    Serial1.print("Connecting...");
-    WiFi.setHostname(g_name);
-    //esablishing wifi connection
-    while(WiFi.begin(g_wifiSsid, g_wifiPass) != WL_CONNECTED){ //retry connect indef
-        delay(100);
-        Serial1.print(".");
-        //TODO Wire gpio to reset pin and triger it after some time
-    }
-    WiFi.lowPowerMode();
-    Serial1.println("connected");
-    Serial1.print("IP Address: ");
-    Serial1.println(WiFi.localIP());
-    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    mqttClient.setKeepAlive(70); //Keep Connection alive for 70 seconds
-    mqttClient.setBufferSize(DOCUMENT_SIZE);
-    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     rtc.begin(); //begin the rtc at "random time" probably  Jan 1 2000 at 00:00:00 o'clock
     g_lastRtcUpdateDay = rtc.getDay();
     if(updateNetworkTime()){ //set real time acording to network
@@ -170,7 +153,6 @@ void loop()
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case PUBLISH_MQTT:
-        mqttReconnect();
         long wifiSignalStrength = WiFi.RSSI();
         if (b_ENVDataCorrection)
         {
@@ -182,7 +164,6 @@ void loop()
             publishMQTT(eco2Value, tvocValue, wifiSignalStrength, batteryVoltage, 
             batteryPercentage);
         }
-        mqttClient.loop();
         e_state = IDLE;
         break;
     }
@@ -201,11 +182,32 @@ void alarmISRCallback()
  * it fetchs the latest network time and set the Real Time Clock to this time.
  * Afterwards it disconnects from wifi to conserve battery.
  */
-bool updateNetworkTime(){
+bool updateNetworkTime()
+{
+    uint8_t connection_attempts = 0;
+    //Begin the Wifi Connection
+    Serial1.print("Connecting to WiFi...");
+    WiFi.setHostname(g_name);
+    //esablishing wifi connection
+    while(WiFi.begin(g_wifiSsid, g_wifiPass) != WL_CONNECTED){ //retry connect indef
+        connection_attempts++;
+        //Resets the MCU after 10 unsuccessful attempts to connect to WiFi
+        if(connection_attempts == 9){
+            softwareReset();
+        }
+        Serial1.print(".");
+        delay(100);
+    }
+    Serial1.println("connected");
+    Serial1.print("IP Address: ");
+    Serial1.println(WiFi.localIP());
+    WiFi.lowPowerMode();
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     WiFiUDP ntpUdpObject;
     NTPClient ntpClient(ntpUdpObject, g_ntpTimeServerURL, 7200);
     ntpClient.begin();
-    uint8_t connection_attempts = 0;
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    connection_attempts = 0;
     while(!ntpClient.update()){ //attempt to connect to ntp server up to 5 times.
         connection_attempts++;
         if(connection_attempts == 4){
@@ -213,9 +215,13 @@ bool updateNetworkTime(){
         }
         delay(1000);
     }
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     unsigned long epochTime = ntpClient.getEpochTime();
     rtc.setEpoch(epochTime);
     g_lastRtcUpdateDay = rtc.getDay(); //set to actual day
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    WiFi.disconnect();
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     return true;
 }
 /*________________________________________________________________________________________________*/
@@ -223,13 +229,31 @@ bool updateNetworkTime(){
  * @brief Attempt to reconnect to mqtt Server
  * 
  */
-void mqttReconnect() {
+void mqttReconnect() 
+{
   // Loop until we're reconnected
+    uint8_t connection_attempts = 0;
+    //Begin the MQTT Connection
+    Serial1.print("Connecting to MQTT...");
+    while(WiFi.begin(g_wifiSsid, g_wifiPass) != WL_CONNECTED){ //retry connect indef
+        connection_attempts++;
+        //Resets the MCU after 10 unsuccessful attempts to connect to WiFi
+        if(connection_attempts == 9){
+            softwareReset();
+        }
+        Serial1.print(".");
+        delay(100);
+    }
     while (!mqttClient.connected()) {
         if (!mqttClient.connect(g_name, g_mqttUsername, g_mqttPassword)){
+            connection_attempts++;
             Serial1.print("failed, rc=");
             Serial1.print(mqttClient.state());
             Serial1.println(" try again in 1 seconds");
+            //Resets the MCU after 10 unsuccessful attempts to connect to WiFi
+            if(connection_attempts == 9){
+                softwareReset();
+            }
             // Wait 1 seconds before retrying
             delay(1000);
         }
@@ -367,7 +391,29 @@ bool readDHTSensor(float &temperatureValue, float &humidityValue, float &heatInd
 void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi, 
 float voltage, float percentage)
 {
-
+    uint8_t connection_attempts = 0;
+    //Begin the Wifi Connection
+    Serial1.print("Connecting to WiFi...");
+    WiFi.setHostname(g_name);
+    //esablishing wifi connection
+    while(WiFi.begin(g_wifiSsid, g_wifiPass) != WL_CONNECTED){ //retry connect indef
+        connection_attempts++;
+        //Resets the MCU after 10 unsuccessful attempts to connect to WiFi
+        if(connection_attempts == 9){
+            softwareReset();
+        }
+        Serial1.print(".");
+        delay(100);
+    }
+    Serial1.println("connected");
+    Serial1.print("IP Address: ");
+    Serial1.println(WiFi.localIP());
+    WiFi.lowPowerMode();
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    mqttClient.setKeepAlive(70); //Keep Connection alive for 70 seconds
+    mqttClient.setBufferSize(DOCUMENT_SIZE);
+    mqttReconnect(); //Connect to MQTT server. Returns only when connection got esablished
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
     json["tags"]["location"].set(g_location);
     json["tags"]["uuid"].set(g_uuid);
@@ -383,6 +429,17 @@ float voltage, float percentage)
     bool success  = mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
     Serial1.println(success ? "Published readings to MQTT" : "Failed to Publish reading to MQTT");
     Serial1.println(mqttJsonBuffer);
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    //NOTE Debateable iof this is needed if under the assumtion that I also dissconnect from the 
+    //MQTT server.
+    mqttClient.loop();
+    //Disconnect from WiFi to conserver power
+    //TODO maybe I also have to call mqttClient.disconnect() and remove the keep alive?
+    // But it be rather nore convinient if the connection would "stay alive" from the servers point
+    // of view even if the MCU has wifi diabled
+    //mqttClient.disconnect();
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    WiFi.disconnect();
 }
 /*________________________________________________________________________________________________*/
 /**
@@ -402,6 +459,29 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
                  float temperatureValue, float humidityValue, float heatIndexValue, 
                  float voltage, float percentage)
 {
+    uint8_t connection_attempts = 0;
+    //Begin the Wifi Connection
+    Serial1.print("Connecting to WiFi...");
+    WiFi.setHostname(g_name);
+    //esablishing wifi connection
+    while(WiFi.begin(g_wifiSsid, g_wifiPass) != WL_CONNECTED){ //retry connect indef
+        connection_attempts++;
+        //Resets the MCU after 10 unsuccessful attempts to connect to WiFi
+        if(connection_attempts == 9){
+            softwareReset();
+        }
+        Serial1.print(".");
+        delay(100);
+    }
+    Serial1.println("connected");
+    Serial1.print("IP Address: ");
+    Serial1.println(WiFi.localIP());
+    WiFi.lowPowerMode();
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    mqttClient.setKeepAlive(70); //Keep Connection alive for 70 seconds
+    mqttClient.setBufferSize(DOCUMENT_SIZE);
+    mqttReconnect(); //Connect to MQTT server. Returns only when connection got esablished
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
     // json["measurement"].set(g_influxDbMeasurement);
     json["tags"]["location"].set(g_location);
@@ -421,6 +501,17 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
     bool success  = mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
     Serial1.println(success ? "Published readings to MQTT" : "Failed to Publish reading to MQTT");
     Serial1.println(mqttJsonBuffer);
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    //NOTE Debateable iof this is needed if under the assumtion that I also dissconnect from the 
+    //MQTT server.
+    mqttClient.loop();
+    //Disconnect from WiFi to conserver power
+    //TODO maybe I also have to call mqttClient.disconnect() and remove the keep alive?
+    // But it be rather nore convinient if the connection would "stay alive" from the servers point
+    // of view even if the MCU has wifi diabled
+    //mqttClient.disconnect();
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    WiFi.disconnect();
 }
 /*________________________________________________________________________________________________*/
 /**
@@ -441,5 +532,15 @@ float calcBatteryPercentageLiPo(float x)
     else
         return 120.0f*x-404;
 }
-//TODO meassure (9V block lithum battery discharge rate and generate formula with Linear Modelling using R)
+/*________________________________________________________________________________________________*/
+/**
+ * @brief Triggers a reset, when an issue occurs.
+ * 
+ */
+void softwareReset(){
+    //TODO test soft reset
+    /*__disable_irq();
+    NVIC_SystemReset();
+    while (true);*/
+}
 /*end of file*/

@@ -20,4 +20,5 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi, float voltag
 float calcBatteryPercentageLiPo(float voltage);
 bool updateNetworkTime();
 void mqttReconnect();
+void softwareReset();
 #endif

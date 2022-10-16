@@ -62,7 +62,19 @@ void setup()
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     setupEEPROM();
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    Serial1.begin(9600);            // Use Hardware Serial (not USB Serial) to debug
+    Serial1.begin(9600);           // Use Hardware Serial (not USB Serial) to debug
+    if (REG_PM_RCAUSE == PM_RCAUSE_SYST)
+        Serial1.println("Reset requested by system");
+    else if (REG_PM_RCAUSE == PM_RCAUSE_WDT)
+        Serial1.println("Reset requested by Watchdog");
+    else if (REG_PM_RCAUSE == PM_RCAUSE_EXT)
+        Serial1.println("External reset requested");
+    else if (REG_PM_RCAUSE == PM_RCAUSE_BOD33)
+        Serial1.println("Reset brown out 3.3V");
+    else if (REG_PM_RCAUSE == PM_RCAUSE_BOD12)
+        Serial1.println("Reset brown out 1.2v");
+    else if (REG_PM_RCAUSE == PM_RCAUSE_POR)
+        Serial1.println("Normal power on reset");
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     digitalWrite(CCS_811_nWAKE, LOW); // Enable Logic engine of CCS811
     delayMicroseconds(55);            // Time until active after nWAKE asserted = 50 us

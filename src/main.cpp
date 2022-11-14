@@ -52,7 +52,7 @@ Adafruit_CCS811 co2Sensor;
 /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
 BLEService enviormentalSensingStationService(SERVICE_ENVIRONMENTAL_SENSING_UUID);
 /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-BLEUnsignedCharCharacteristic enviormentalCharacteristic(
+BLECharCharacteristic enviormentalCharacteristic(
     CHARACTERISTIC_ENVIORMENTAL_SENSOR_DATA_UUID, 
     BLERead | BLENotify);
 
@@ -371,10 +371,11 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue,
     json["fields"]["temperature"].set(temperatureValue);
     json["fields"]["humidity"].set(humidityValue);
     json["fields"]["Battery Voltage"].set(voltage);
-    uint8_t bleJsonBuffer[DOCUMENT_SIZE];
-    size_t n = serializeJson(json, bleJsonBuffer);
-    //Write the JSON to BLE
-    int success  = enviormentalCharacteristic.writeValue(bleJsonBuffer, n); 
+    char bleStringBuffer[DOCUMENT_SIZE];
+    size_t n = serializeJson(json, bleStringBuffer);
+    //byte *bleByteBuffer; 
+    //bleStringBuffer.getBytes(bleByteBuffer, n); //BUG? mybe n+1 because get bytes alway auto null terminates a string hence it cloud overwrite the last char with 0;
+    int success  = enviormentalCharacteristic.writeValue(bleStringBuffer, n); 
     Serial1.println(success ? "Published readings to MQTT" : "Failed to Publish reading to MQTT");
     //Serial1.println(bleJsonBuffer);
 }

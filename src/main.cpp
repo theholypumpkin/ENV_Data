@@ -246,7 +246,7 @@ void mqttReconnect() {
  */
 void setupEEPROM()
 {
-
+    //BUG UUID is alway reset it should stay the same!
     Button eepromClearButton(EEPROM_CLEAR_BUTTON_PIN);
     eepromClearButton.begin();
     unsigned long loopEnd = millis() + 5000;

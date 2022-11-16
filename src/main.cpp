@@ -437,12 +437,11 @@ void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
  */
 float calcBatteryPercentageLiPo(float x)
 {
-    if (x < 3.896)
-        return 255.0f*x - 930.0f;
-    else if (x < 3.648)
-        return 0.0;
-    else
+    if(x > 3.896)
         return 120.0f*x-404;
+    else if (x > 3.648)
+        return 255.0f*x - 930.0f;      
+    else
+        return 0.0;
 }
-//TODO meassure (9V block lithum battery discharge rate and generate formula with Linear Modelling using R)
 /*end of file*/

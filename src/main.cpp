@@ -260,7 +260,7 @@ void setupEEPROM()
         if(!EEPROM.isValid()) //If never written to the EEPROM Emulation, ignore the button.
         #endif
             break;
-        Serial.print(".");
+        Serial1.print(".");
         eepromClearButton.read();
         if (eepromClearButton.isPressed())
         {
@@ -283,8 +283,8 @@ void setupEEPROM()
     uint16_t uuidUpperByte = (uint16_t)EEPROM.read(addr + 1) << 8;
     uint16_t uuidLowerByte = (uint16_t)EEPROM.read(addr);
     g_uuid = uuidUpperByte + uuidLowerByte; // leftshift by 8 bit
-    Serial.print("Current UUID: ");
-    Serial.println(g_uuid, HEX);
+    Serial1.print("Current UUID: ");
+    Serial1.println(g_uuid, HEX);
     /* Under the curcumstance that we had reset the eeprom once all bytes are 0.
      * When we never wrote anything to the EEPROM of the microcontroller all bytes will be FF.
      * Because we have a two byte variable, we have to check of the value not 0 or FFFF
@@ -307,8 +307,8 @@ void setupEEPROM()
         EEPROM.commit(); //Accually writing the data to the EEPROM Emulation!
         #endif
     }
-    Serial.print("New UUID: ");
-    Serial.println(g_uuid, HEX);
+    Serial1.print("New UUID: ");
+    Serial1.println(g_uuid, HEX);
 }
 /*________________________________________________________________________________________________*/
 /**

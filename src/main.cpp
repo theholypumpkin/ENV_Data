@@ -209,15 +209,22 @@ void alarmISRCallback()
  */
 void setupEEPROM()
 {
-
+    Serial1.print("Awaiting Button Press");
+    //BUG UUID is alway reset it should stay the same!
     Button eepromClearButton(EEPROM_CLEAR_BUTTON_PIN);
     eepromClearButton.begin();
     unsigned long loopEnd = millis() + 5000;
     while (millis() < loopEnd)
     { // check for 5 seconds if the button is pressed
+        #ifdef ARDUINO_SAMD_NANO_33_IOT
+        if(!EEPROM.isValid()) //If never written to the EEPROM Emulation, ignore the button.
+        #endif
+            break;
+        Serial1.print(".");
         eepromClearButton.read();
         if (eepromClearButton.isPressed())
         {
+            Serial.println("Button was pressed");
             // This loop will take about 3.3*256 ms to complete which is about 0.85 seconds.
             for (uint16_t i = 0; i < EEPROM.length(); i++)
             {
@@ -236,6 +243,8 @@ void setupEEPROM()
     uint16_t uuidUpperByte = (uint16_t)EEPROM.read(addr + 1) << 8;
     uint16_t uuidLowerByte = (uint16_t)EEPROM.read(addr);
     g_uuid = uuidUpperByte + uuidLowerByte; // leftshift by 8 bit
+    Serial1.print("Current UUID: ");
+    Serial1.println(g_uuid, HEX);
     /* Under the curcumstance that we had reset the eeprom once all bytes are 0.
      * When we never wrote anything to the EEPROM of the microcontroller all bytes will be FF.
      * Because we have a two byte variable, we have to check of the value not 0 or FFFF
@@ -254,7 +263,12 @@ void setupEEPROM()
         // Write the generated UUID to EEPROM
         EEPROM.write(addr, (uint8_t)uuidLowerByte);
         EEPROM.write(addr + 1, (uint8_t)uuidUpperByte);
+        #ifdef ARDUINO_SAMD_NANO_33_IOT
+        EEPROM.commit(); //Accually writing the data to the EEPROM Emulation!
+        #endif
     }
+    Serial1.print("New UUID: ");
+    Serial1.println(g_uuid, HEX);
 }
 /*________________________________________________________________________________________________*/
 /**

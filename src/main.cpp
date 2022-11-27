@@ -18,7 +18,9 @@
 /* SAMD21. SAMD51 chips do not have EEPROM. This library provides an EEPROM-like API and hence
  * allows the same code to be used.
  */
+#ifdef ARDUINO_SAMD_NANO_33_IOT
 #include <FlashAsEEPROM.h>
+#endif
 /*================================================================================================*/
 #define RANDOM_SEED_ADC_PIN A2 //NEVER CONNECT A SENSOR TO THIS PIN
 #define BATTERY_VOLTAGE_ADC_PIN A6
@@ -28,6 +30,7 @@
 #define DHTPIN 7
 #define DHTTYPE DHT22
 #define EEPROM_CLEAR_BUTTON_PIN 8
+#define EEPROM_EMULATION_SIZE 64 //We really only need 2 bytes but it still less the the default 1k.
 #define DOCUMENT_SIZE 511 //If publishing fails, increase the Document Size
 /*================================================================================================*/
 enum statemachine_t
@@ -61,9 +64,9 @@ void setup()
     pinMode(CCS_811_nWAKE, OUTPUT);
     analogReadResolution(ADC_RESOLUTION);
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    setupEEPROM();
-    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     Serial1.begin(9600);            // Use Hardware Serial (not USB Serial) to debug
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    setupEEPROM();
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     digitalWrite(CCS_811_nWAKE, LOW); // Enable Logic engine of CCS811
     delayMicroseconds(55);            // Time until active after nWAKE asserted = 50 us
@@ -246,15 +249,22 @@ void mqttReconnect() {
  */
 void setupEEPROM()
 {
+    Serial1.print("Awaiting Button Press");
     //BUG UUID is alway reset it should stay the same!
     Button eepromClearButton(EEPROM_CLEAR_BUTTON_PIN);
     eepromClearButton.begin();
     unsigned long loopEnd = millis() + 5000;
     while (millis() < loopEnd)
     { // check for 5 seconds if the button is pressed
+        #ifdef ARDUINO_SAMD_NANO_33_IOT
+        if(!EEPROM.isValid()) //If never written to the EEPROM Emulation, ignore the button.
+        #endif
+            break;
+        Serial.print(".");
         eepromClearButton.read();
         if (eepromClearButton.isPressed())
         {
+            Serial.println("Button was pressed");
             // This loop will take about 3.3*256 ms to complete which is about 0.85 seconds.
             for (uint16_t i = 0; i < EEPROM.length(); i++)
             {
@@ -273,6 +283,8 @@ void setupEEPROM()
     uint16_t uuidUpperByte = (uint16_t)EEPROM.read(addr + 1) << 8;
     uint16_t uuidLowerByte = (uint16_t)EEPROM.read(addr);
     g_uuid = uuidUpperByte + uuidLowerByte; // leftshift by 8 bit
+    Serial.print("Current UUID: ");
+    Serial.println(g_uuid, HEX);
     /* Under the curcumstance that we had reset the eeprom once all bytes are 0.
      * When we never wrote anything to the EEPROM of the microcontroller all bytes will be FF.
      * Because we have a two byte variable, we have to check of the value not 0 or FFFF
@@ -291,7 +303,12 @@ void setupEEPROM()
         // Write the generated UUID to EEPROM
         EEPROM.write(addr, (uint8_t)uuidLowerByte);
         EEPROM.write(addr + 1, (uint8_t)uuidUpperByte);
+        #ifdef ARDUINO_SAMD_NANO_33_IOT
+        EEPROM.commit(); //Accually writing the data to the EEPROM Emulation!
+        #endif
     }
+    Serial.print("New UUID: ");
+    Serial.println(g_uuid, HEX);
 }
 /*________________________________________________________________________________________________*/
 /**

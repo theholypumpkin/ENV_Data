@@ -12,7 +12,8 @@
 #include <Adafruit_CCS811.h>
 #include <ArduinoJson.h>
 #include <JC_Button.h>
-#include <PubSubClient.h>
+//#include <PubSubClient.h>
+#include <ArduinoHA.h>
 #include <math.h>
 #include <RTCZero.h> //Also inplements sleep
 /* SAMD21. SAMD51 chips do not have EEPROM. This library provides an EEPROM-like API and hence
@@ -56,7 +57,18 @@ RTCZero rtc;
 DHT tempHmdSensor(DHTPIN, DHTTYPE); // Create the DHT object
 Adafruit_CCS811 co2Sensor;
 WiFiClient wifiClient;
-PubSubClient mqttClient(g_mqttServerUrl, g_mqttServerPort, wifiClient);
+//PubSubClient mqttClient(g_mqttServerUrl, g_mqttServerPort, wifiClient);
+/*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+HADevice device(g_name);
+HAMqtt mqttClient(wifiClient, device);
+HASensorNumber tempSensor("temperature", HASensorNumber::PrecisionP2);
+HASensorNumber hmdSensor("humidity", HASensorNumber::PrecisionP2);
+HASensorNumber eco2Sensor("est. CO2");
+HASensorNumber tvocSensor("Air Qulity");
+HASensorNumber batVoltage("Battery Voltage", HASensorNumber::PrecisionP2);
+HASensorNumber batPercent("Battery Percentage", HASensorNumber::PrecisionP2);
+HASensorNumber heatIndex("Heat Index", HASensorNumber::PrecisionP2);
+HASensorNumber rssi("WiFi RSSI");
 /*================================================================================================*/
 void setup()
 {

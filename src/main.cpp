@@ -10,7 +10,7 @@
 #include <DHT.h>
 #include <DHT_U.h>
 #include <Adafruit_CCS811.h>
-#include <ArduinoJson.h>
+//#include <ArduinoJson.h>
 #include <JC_Button.h>
 //#include <PubSubClient.h>
 #include <ArduinoHA.h>
@@ -61,14 +61,15 @@ WiFiClient wifiClient;
 /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
 HADevice device(g_name);
 HAMqtt mqttClient(wifiClient, device);
-HASensorNumber tempSensor("temperature", HASensorNumber::PrecisionP2);
-HASensorNumber hmdSensor("humidity", HASensorNumber::PrecisionP2);
-HASensorNumber eco2Sensor("est. CO2");
-HASensorNumber tvocSensor("Air Qulity");
-HASensorNumber batVoltage("Battery Voltage", HASensorNumber::PrecisionP2);
-HASensorNumber batPercent("Battery Percentage", HASensorNumber::PrecisionP2);
-HASensorNumber heatIndex("Heat Index", HASensorNumber::PrecisionP2);
-HASensorNumber rssi("WiFi RSSI");
+HASensorNumber tempHASensor("temp", HASensorNumber::PrecisionP2);
+HASensorNumber hmdHASensor("hmd", HASensorNumber::PrecisionP2);
+HASensorNumber heatIndexHASensor("hI", HASensorNumber::PrecisionP2);
+HASensorNumber co2HASensor("co2");
+HASensorNumber tvocHASensor("aqi");
+HASensorNumber batVoltageHASensor("batV", HASensorNumber::PrecisionP2);
+HASensorNumber batPercentHASensor("batP", HASensorNumber::PrecisionP2);
+HASensorNumber rssiHASensor("rssi");
+HASensor locationHASensor("loc");
 /*================================================================================================*/
 void setup()
 {
@@ -113,8 +114,52 @@ void setup()
     Serial1.print("IP Address: ");
     Serial1.println(WiFi.localIP());
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-    mqttClient.setKeepAlive(70); //Keep Connection alive for 70 seconds
-    mqttClient.setBufferSize(DOCUMENT_SIZE);
+    byte uuid_arr[2] = {
+        (byte)g_uuid >> 8, //remove the lower byte and retains the uppper byte
+        (byte)(g_uuid << 8) >> 8 //removes the upper byte by shifting it out of range and than back.
+        }; 
+    device.setUniqueId(uuid_arr, 2);
+    device.setName(g_name);
+    mqttClient.begin(g_mqttServerUrl, g_mqttServerPort, g_mqttUsername, g_mqttPassword);
+    /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
+    //Setting the parameters of the Sensors in a way Home Assitant understands them
+    tempHASensor.setName("Temperature");
+    hmdHASensor.setName("Humidity");
+    heatIndexHASensor.setName("Heat Index");
+    co2HASensor.setName("CO2");
+    tvocHASensor.setName("Air Quality");
+    batVoltageHASensor.setName("Battery Voltage");
+    batPercentHASensor.setName("Battery Percentage");
+    rssiHASensor.setName("WiFi Signal Strength");
+
+    tempHASensor.setUnitOfMeasurement("°C");
+    hmdHASensor.setUnitOfMeasurement("%");
+    heatIndexHASensor.setUnitOfMeasurement("°C");
+    co2HASensor.setUnitOfMeasurement("ppm");
+    tvocHASensor.setUnitOfMeasurement("ppb");
+    batVoltageHASensor.setUnitOfMeasurement("V");
+    batPercentHASensor.setUnitOfMeasurement("%");
+    rssiHASensor.setUnitOfMeasurement("dBm");
+
+    tempHASensor.setIcon("mdi:temperature-celsius");
+    hmdHASensor.setIcon("mdi:water-percent");
+    heatIndexHASensor.setIcon("mdi:temperature-celsius");
+    co2HASensor.setIcon("mdi:molecule-co2");
+    tvocHASensor.setIcon("mdi:air-filter");
+    batVoltageHASensor.setIcon("mdi:battery");
+    batPercentHASensor.setIcon("mdi:battery");
+    rssiHASensor.setIcon("mdi:wifi-strength-3-alert");
+
+    tempHASensor.setDeviceClass("temperature");
+    hmdHASensor.setDeviceClass("humidity");
+    heatIndexHASensor.setDeviceClass("temperature");
+    co2HASensor.setDeviceClass("carbon_dioxide");
+    tvocHASensor.setDeviceClass("aqi");
+    batVoltageHASensor.setDeviceClass("voltage");
+    batPercentHASensor.setDeviceClass("battery");
+    rssiHASensor.setDeviceClass("signal_strength");
+    
+    locationHASensor.setValue(g_location);
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     rtc.begin(); //begin the rtc at "random time" probably  Jan 1 2000 at 00:00:00 o'clock
     g_lastRtcUpdateDay = rtc.getDay();
@@ -188,7 +233,7 @@ void loop()
         break;
     /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
     case PUBLISH_MQTT:
-        mqttReconnect();
+        mqttClient.loop();
         long wifiSignalStrength = WiFi.RSSI();
         if (b_ENVDataCorrection)
         {
@@ -200,7 +245,7 @@ void loop()
             publishMQTT(eco2Value, tvocValue, wifiSignalStrength, batteryVoltage, 
             batteryPercentage);
         }
-        mqttClient.loop();
+        //mqttClient.loop();
         e_state = IDLE;
         break;
     }
@@ -235,23 +280,6 @@ bool updateNetworkTime(){
     rtc.setEpoch(epochTime);
     g_lastRtcUpdateDay = rtc.getDay(); //set to actual day
     return true;
-}
-/*________________________________________________________________________________________________*/
-/**
- * @brief Attempt to reconnect to mqtt Server
- * 
- */
-void mqttReconnect() {
-  // Loop until we're reconnected
-    while (!mqttClient.connected()) {
-        if (!mqttClient.connect(g_name, g_mqttUsername, g_mqttPassword)){
-            Serial1.print("failed, rc=");
-            Serial1.print(mqttClient.state());
-            Serial1.println(" try again in 1 seconds");
-            // Wait 1 seconds before retrying
-            delay(1000);
-        }
-    }
 }
 /*________________________________________________________________________________________________*/
 /**
@@ -396,26 +424,21 @@ bool readDHTSensor(float &temperatureValue, float &humidityValue, float &heatInd
  * @param voltage the battery voltage
  * @param percentage the calculated battery percentage
  */
-void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi, 
+void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssiValue, 
 float voltage, float percentage)
 {
+    co2HASensor.setValue(eco2Value);
+    tvocHASensor.setValue(tvocValue);
+    rssiHASensor.setValue(rssiValue);
+    batVoltageHASensor.setValue(voltage);
+    batPercentHASensor.setValue(percentage);
 
-    StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
-    json["tags"]["location"].set(g_location);
-    json["tags"]["uuid"].set(g_uuid);
-    json["tags"]["name"].set(g_name);
-    json["fields"]["eCO2"].set(eco2Value);
-    json["fields"]["TVOC"].set(tvocValue);
-    json["fields"]["Battery Voltage"].set(voltage);
-    json["fields"]["Battery Percentage"].set(percentage);
-    json["fields"]["WiFi RSSI"].set(rssi);
-    // using a buffer speeds up the mqtt publishing process by over 100x
-    char mqttJsonBuffer[DOCUMENT_SIZE];
-    size_t n = serializeJson(json, mqttJsonBuffer); // saves a bit of time when publishing
-    bool success  = mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
-    Serial1.println(success ? "Published readings to MQTT" : "Failed to Publish reading to MQTT");
-    Serial1.println(mqttJsonBuffer);
-}
+    Serial1.print("eco2: "); Serial1.print(eco2Value);
+    Serial1.print("tvoc: "); Serial1.print(tvocValue);
+    Serial1.print("rssi: "); Serial1.print(rssiValue);
+    Serial1.print("voltage: "); Serial1.print(voltage);
+    Serial1.print("percentage: "); Serial1.println(percentage);
+} 
 /*________________________________________________________________________________________________*/
 /**
  * @brief Sends the Read Sensor values via the Serial interface to the Server to be saved in the
@@ -430,29 +453,27 @@ float voltage, float percentage)
  * @param voltage the battery voltage
  * @param percentage the calculated battery percentage
  */
-void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
+void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssiValue,
                  float temperatureValue, float humidityValue, float heatIndexValue, 
                  float voltage, float percentage)
 {
-    StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
-    // json["measurement"].set(g_influxDbMeasurement);
-    json["tags"]["location"].set(g_location);
-    json["tags"]["uuid"].set(g_uuid);
-    json["tags"]["name"].set(g_name);
-    json["fields"]["eCO2"].set(eco2Value);
-    json["fields"]["TVOC"].set(tvocValue);
-    json["fields"]["temperature"].set(temperatureValue);
-    json["fields"]["humidity"].set(humidityValue);
-    json["fields"]["heat index"].set(heatIndexValue);
-    json["fields"]["Battery Voltage"].set(voltage);
-    json["fields"]["Battery Percentage"].set(percentage);
-    json["fields"]["WiFi RSSI"].set(rssi);
-    // using a buffer speeds up the mqtt publishing process by over 100x
-    char mqttJsonBuffer[DOCUMENT_SIZE];
-    size_t n = serializeJson(json, mqttJsonBuffer);
-    bool success  = mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
-    Serial1.println(success ? "Published readings to MQTT" : "Failed to Publish reading to MQTT");
-    Serial1.println(mqttJsonBuffer);
+    tempHASensor.setValue(temperatureValue);
+    hmdHASensor.setValue(humidityValue);
+    heatIndexHASensor.setValue(heatIndexValue);
+    co2HASensor.setValue(eco2Value);
+    tvocHASensor.setValue(tvocValue);
+    rssiHASensor.setValue(rssiValue);
+    batVoltageHASensor.setValue(voltage);
+    batPercentHASensor.setValue(percentage);
+
+    Serial1.print("temperature: "); Serial1.print(temperatureValue);
+    Serial1.print("humidity: "); Serial1.print(humidityValue);
+    Serial1.print("heatIndex: "); Serial1.print(heatIndexValue);
+    Serial1.print("eco2: "); Serial1.print(eco2Value);
+    Serial1.print("tvoc: "); Serial1.print(tvocValue);
+    Serial1.print("rssi: "); Serial1.print(rssiValue);
+    Serial1.print("voltage: "); Serial1.print(voltage);
+    Serial1.print("percentage: "); Serial1.println(percentage);
 }
 /*________________________________________________________________________________________________*/
 /**

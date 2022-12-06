@@ -3,7 +3,7 @@
 #endif
 #ifndef _SECRETS_HPP
 #define _SECRETS_HPP
-extern const char* g_name = "a name you like";
+extern char* g_name = "a name you like";
 extern const char* g_location = "kitchen or whatever";
 extern const IPAddress g_staticIPAddress(0,0,0,0);
 extern const IPAddress g_DNSAddress(1,1,1,1);
@@ -16,5 +16,5 @@ extern const char* g_mqttPassword = "your password";
 extern const char* g_wifiSsid = "wifi name";
 extern const char* g_wifiPass = "wifi password";
 
-extern const char* g_indoorAirQualityTopic = "data/topic/";
+extern char* g_indoorAirQualityTopic = "data/topic/";
 #endif

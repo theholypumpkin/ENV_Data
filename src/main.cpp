@@ -283,7 +283,7 @@ void setupEEPROM()
     uint16_t uuidUpperByte = (uint16_t)EEPROM.read(addr + 1) << 8;
     uint16_t uuidLowerByte = (uint16_t)EEPROM.read(addr);
     g_uuid = uuidUpperByte + uuidLowerByte; // leftshift by 8 bit
-    Serial1.print("Current UUID: ");
+    Serial1.println("Current UUID: ");
     Serial1.println(g_uuid, HEX);
     /* Under the curcumstance that we had reset the eeprom once all bytes are 0.
      * When we never wrote anything to the EEPROM of the microcontroller all bytes will be FF.
@@ -380,28 +380,30 @@ bool readDHTSensor(float &temperatureValue, float &humidityValue, float &heatInd
  *
  * @param eco2Value The read CO2 Value
  * @param tvocValue The read TVOC Value
- * @param rssi The WiFi Signal Strength
- * @param voltage the battery voltage
- * @param percentage the calculated battery percentage
+ * @param rssiValue The WiFi Signal Strength
+ * @param voltageValue the battery voltage
+ * @param percentageValue the calculated battery percentage
  */
-void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi, 
-float voltage, float percentage)
+void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssiValue, 
+float voltageValue, float percentageValue)
 {
 
     StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
-    json["tags"]["location"].set(g_location);
-    json["tags"]["uuid"].set(g_uuid);
-    json["tags"]["name"].set(g_name);
-    json["fields"]["eCO2"].set(eco2Value);
-    json["fields"]["TVOC"].set(tvocValue);
-    json["fields"]["Battery Voltage"].set(voltage);
-    json["fields"]["Battery Percentage"].set(percentage);
-    json["fields"]["WiFi RSSI"].set(rssi);
+    json["location"].set(g_location);
+    json["uuid"].set(g_uuid);
+    json["name"].set(g_name);
+    json["eCO2"].set(eco2Value);
+    json["TVOC"].set(tvocValue);
+    json["battery_voltage"].set(voltageValue);
+    json["battery_percentage"].set(percentageValue);
+    json["wifi_rssi"].set(rssiValue);
     // using a buffer speeds up the mqtt publishing process by over 100x
     char mqttJsonBuffer[DOCUMENT_SIZE];
     size_t n = serializeJson(json, mqttJsonBuffer); // saves a bit of time when publishing
+    //char* topic = g_indoorAirQualityTopic + '/' + g_uuid;
     bool success  = mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
-    Serial1.println(success ? "Published readings to MQTT" : "Failed to Publish reading to MQTT");
+    Serial1.println(success ? "Published to MQTT" : "Failed to Publish to MQTT");
+    Serial1.println(g_indoorAirQualityTopic);
     Serial1.println(mqttJsonBuffer);
 }
 /*________________________________________________________________________________________________*/
@@ -411,35 +413,37 @@ float voltage, float percentage)
  *
  * @param eco2Value The read CO2 Value
  * @param tvocValue The read TVOC Value
- * @param rssi The WiFi Signal Strength
+ * @param rssiValue The WiFi Signal Strength
  * @param temperatureValue The read Temperature Value
  * @param humidityValue The read Humidity Value
  * @param heatIndexValue The calculated heat index value
- * @param voltage the battery voltage
- * @param percentage the calculated battery percentage
+ * @param voltageValue the battery voltage
+ * @param percentageValue the calculated battery percentage
  */
-void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssi,
+void publishMQTT(uint16_t eco2Value, uint16_t tvocValue, long rssiValue,
                  float temperatureValue, float humidityValue, float heatIndexValue, 
-                 float voltage, float percentage)
+                 float voltageValue, float percentageValue)
 {
     StaticJsonDocument<DOCUMENT_SIZE> json; // create a json object
     // json["measurement"].set(g_influxDbMeasurement);
-    json["tags"]["location"].set(g_location);
-    json["tags"]["uuid"].set(g_uuid);
-    json["tags"]["name"].set(g_name);
-    json["fields"]["eCO2"].set(eco2Value);
-    json["fields"]["TVOC"].set(tvocValue);
-    json["fields"]["temperature"].set(temperatureValue);
-    json["fields"]["humidity"].set(humidityValue);
-    json["fields"]["heat index"].set(heatIndexValue);
-    json["fields"]["Battery Voltage"].set(voltage);
-    json["fields"]["Battery Percentage"].set(percentage);
-    json["fields"]["WiFi RSSI"].set(rssi);
+    json["location"].set(g_location);
+    json["uuid"].set(g_uuid);
+    json["name"].set(g_name);
+    json["eCO2"].set(eco2Value);
+    json["TVOC"].set(tvocValue);
+    json["temperature"].set(temperatureValue);
+    json["humidity"].set(humidityValue);
+    json["heat_index"].set(heatIndexValue);
+    json["battery_voltage"].set(voltageValue);
+    json["battery_percentage"].set(percentageValue);
+    json["wifi_rssi"].set(rssiValue);
     // using a buffer speeds up the mqtt publishing process by over 100x
     char mqttJsonBuffer[DOCUMENT_SIZE];
     size_t n = serializeJson(json, mqttJsonBuffer);
+    //char* topic = g_indoorAirQualityTopic + '/' + g_uuid;
     bool success  = mqttClient.publish(g_indoorAirQualityTopic, mqttJsonBuffer, n);
-    Serial1.println(success ? "Published readings to MQTT" : "Failed to Publish reading to MQTT");
+    Serial1.println(success ? "Published to MQTT" : "Failed to Publish to MQTT");
+    Serial1.println(g_indoorAirQualityTopic);
     Serial1.println(mqttJsonBuffer);
 }
 /*________________________________________________________________________________________________*/

@@ -155,7 +155,7 @@ void setup()
     hmdHASensor.setDeviceClass("humidity");
     heatIndexHASensor.setDeviceClass("temperature");
     co2HASensor.setDeviceClass("carbon_dioxide");
-    tvocHASensor.setDeviceClass("aqi");
+    tvocHASensor.setDeviceClass("volatile_organic_compounds");
     batVoltageHASensor.setDeviceClass("voltage");
     batPercentHASensor.setDeviceClass("battery");
     rssiHASensor.setDeviceClass("signal_strength");

@@ -59,7 +59,7 @@ Adafruit_CCS811 co2Sensor;
 WiFiClient wifiClient;
 //PubSubClient mqttClient(g_mqttServerUrl, g_mqttServerPort, wifiClient);
 /*-   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   -   */
-HADevice device(g_name);
+HADevice device;
 HAMqtt mqttClient(wifiClient, device);
 HASensorNumber tempHASensor("temp", HASensorNumber::PrecisionP2);
 HASensorNumber hmdHASensor("hmd", HASensorNumber::PrecisionP2);
@@ -118,6 +118,7 @@ void setup()
         (byte)g_uuid >> 8, //remove the lower byte and retains the uppper byte
         (byte)(g_uuid << 8) >> 8 //removes the upper byte by shifting it out of range and than back.
         }; 
+    
     device.setUniqueId(uuid_arr, 2);
     device.setName(g_name);
     mqttClient.begin(g_mqttServerUrl, g_mqttServerPort, g_mqttUsername, g_mqttPassword);
